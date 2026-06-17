@@ -88,6 +88,16 @@ docker build -t joycode-proxy .
 docker run -p 34891:34891 joycode-proxy
 ```
 
+> **构建时连不上 Alpine 源?** 如果 `docker build` 卡在 `apk add` 并报 `ca-certificates`/`gcc`/`musl-dev` "no such package"，根因通常是网络连不上官方源 `dl-cdn.alpinelinux.org`（国内常见）。用 `ALPINE_MIRROR` 构建参数切到国内镜像即可：
+>
+> ```bash
+> docker build \
+>   --build-arg ALPINE_MIRROR=https://mirrors.aliyun.com/alpine \
+>   -t joycode-proxy .
+> ```
+>
+> 镜像源任选其一（写到 `/alpine` 为止）：阿里云 `https://mirrors.aliyun.com/alpine`、清华 `https://mirrors.tuna.tsinghua.edu.cn/alpine`、中科大 `https://mirrors.ustc.edu.cn/alpine`。若 `go mod download` 也慢，可在构建环境设 `GOPROXY=https://goproxy.cn,direct`。
+
 ### 启动
 
 ```bash
@@ -115,6 +125,24 @@ claude
 export ANTHROPIC_API_KEY=sk-joy-xxxx
 claude
 ```
+
+### Docker / 远程部署登录
+
+非 macOS（尤其是 Docker）环境拿不到本地 JoyCode 客户端凭据，登录方式如下：
+
+1. **OAuth 授权（推荐）**：在 Dashboard 点「OAuth授权登录」，在打开的 JoyCode 页面完成授权。
+   - 本地直接部署时，回调会自动检测并添加账号。
+   - **Docker / 远程部署时，浏览器会跳转到一个无法访问的 `localhost` 页面，这是正常现象**。把该页面地址栏里的完整 URL（形如 `http://127.0.0.1:34891/?pt_key=xxx&...`）复制下来，粘贴进弹窗的输入框，点「提交授权」即可。弹窗里的粘贴框现在一打开就可见，不用再等。
+2. **手动添加**：若你已经有 `pt_key`，可在「手动添加」里直接填。
+   - `pt_key`：来自上面 OAuth 回调 URL 的 `pt_key` 参数，或本地 JoyCode IDE 的 `state.vscdb`。
+   - `user_id`：JoyCode 客户端 → 设置 → 个人信息。
+3. **挂载本地凭据**：如果宿主机装了 JoyCode IDE，可把其状态库挂进容器，让「一键导入」可用：
+   ```bash
+   docker run -p 34891:34891 \
+     -e JOYCODE_STATE_DB=/data/state.vscdb \
+     -v /path/to/JoyCode/state.vscdb:/data/state.vscdb:ro \
+     joycode-proxy
+   ```
 
 ## API 端点
 

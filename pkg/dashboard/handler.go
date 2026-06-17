@@ -1363,9 +1363,17 @@ func (h *Handler) handleSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"settings": settings})
 
 	case http.MethodPut:
-		var settings map[string]string
-		if !readJSONBody(w, r, &settings) {
+		// Settings are stored as opaque strings, but clients (and older
+		// frontend builds) may send raw JSON bool/number values for toggles
+		// like enable_request_logging. Decode loosely and coerce to string so
+		// a bool no longer triggers "cannot unmarshal bool into ... string".
+		var raw map[string]json.RawMessage
+		if !readJSONBody(w, r, &raw) {
 			return
+		}
+		settings := make(map[string]string, len(raw))
+		for k, v := range raw {
+			settings[k] = coerceSettingValue(v)
 		}
 		if err := h.store.SetSettings(settings); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -1376,6 +1384,23 @@ func (h *Handler) handleSettings(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// coerceSettingValue converts a raw JSON settings value into the string form
+// the settings store expects. JSON strings are unquoted; bool/number/other
+// tokens are kept verbatim (e.g. true -> "true", 12 -> "12"); null/empty -> "".
+func coerceSettingValue(raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			return s
+		}
+	}
+	return trimmed
 }
 
 // --- Health Handler ---
