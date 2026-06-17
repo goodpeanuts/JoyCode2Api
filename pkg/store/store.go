@@ -656,7 +656,7 @@ func (s *Store) FillAccountStats(accounts []AccountInfo) {
 			COUNT(*) as req_count,
 			COALESCE(SUM(input_tokens + output_tokens), 0) as token_sum
 		FROM request_logs
-		WHERE date(created_at, 'localtime') = date('now', 'localtime')
+		WHERE date(created_at) = date('now', 'localtime')
 		GROUP BY api_key`)
 	if err != nil {
 		return
@@ -1055,7 +1055,11 @@ func (s *Store) LogRequest(userID, model, endpoint string, stream bool, statusCo
 
 func (s *Store) GetStats() (*Stats, error) {
 	stats := &Stats{}
-	tf := "date(created_at, 'localtime') = date('now', 'localtime')"
+	// created_at is stored as local time (DEFAULT datetime('now','localtime')),
+	// so compare its date directly against today's local date — applying
+	// 'localtime' to created_at would convert it a second time and drop rows
+	// near the day boundary for non-UTC servers.
+	tf := "date(created_at) = date('now', 'localtime')"
 
 	err := s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf).Scan(&stats.TotalRequests)
 	if err != nil {
