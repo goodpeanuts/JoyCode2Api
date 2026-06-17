@@ -196,6 +196,7 @@ var serveCmd = &cobra.Command{
 		if s != nil {
 			subFS, _ := fs.Sub(staticFiles, "static")
 			dash := dashboard.NewHandler(s, subFS, keeper)
+			dash.Version = Version
 			dash.RegisterRoutes(mux)
 			mux.HandleFunc("/", dash.ServeStatic)
 		}

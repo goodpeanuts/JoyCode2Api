@@ -498,3 +498,34 @@ func TestEncryptionKeyReused(t *testing.T) {
 		t.Errorf("decrypted = %q, want %q", dec2, "hello")
 	}
 }
+
+// TestGetHourlyStatsUsesLocalHour guards against the double-localtime bug:
+// created_at is stored as local time, so the hourly bucket must be
+// strftime(created_at) — applying 'localtime' again shifts the hour label by
+// the UTC offset (visible on non-UTC servers; a no-op exactly at UTC).
+func TestGetHourlyStatsUsesLocalHour(t *testing.T) {
+	s := openTestStore(t)
+	if err := s.LogRequest("k1", "GLM-5.1", "/v1/chat", true, 200, 100, "", 1, 2); err != nil {
+		t.Fatalf("log request: %v", err)
+	}
+
+	// Expected bucket: the stored (local) timestamp formatted as-is.
+	var want string
+	if err := s.db.QueryRow("SELECT strftime('%m-%d %H', 'now', 'localtime')").Scan(&want); err != nil {
+		t.Fatalf("compute expected hour: %v", err)
+	}
+
+	hourly, err := s.GetHourlyStats()
+	if err != nil {
+		t.Fatalf("hourly stats: %v", err)
+	}
+	if len(hourly) != 1 {
+		t.Fatalf("hourly rows = %d, want 1: %+v", len(hourly), hourly)
+	}
+	if hourly[0].Hour != want {
+		t.Errorf("hour = %q, want %q (double localtime conversion?)", hourly[0].Hour, want)
+	}
+	if hourly[0].Count != 1 {
+		t.Errorf("count = %d, want 1", hourly[0].Count)
+	}
+}
