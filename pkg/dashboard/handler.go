@@ -33,6 +33,9 @@ type Handler struct {
 	staticFS  fs.FS
 	modelList []string
 	keeper    *keepalive.Keeper
+	// Version is the proxy version reported by /api/health; set by the server
+	// at startup (the build-time Version lives in package main).
+	Version string
 }
 
 func NewHandler(s *store.Store, staticFS fs.FS, k *keepalive.Keeper) *Handler {
@@ -1419,9 +1422,13 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 		count = len(accounts)
 	}
 
+	version := h.Version
+	if version == "" {
+		version = "dev"
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":   "ok",
 		"accounts": count,
-		"version":  "0.3.0",
+		"version":  version,
 	})
 }

@@ -64,6 +64,7 @@ func decodeJSON(t *testing.T, w *httptest.ResponseRecorder) map[string]interface
 
 func TestHandleHealth(t *testing.T) {
 	h, _ := setupTestHandler(t)
+	h.Version = "9.9.9-test"
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -82,8 +83,8 @@ func TestHandleHealth(t *testing.T) {
 	if _, ok := m["accounts"]; !ok {
 		t.Error("missing accounts field")
 	}
-	if _, ok := m["version"]; !ok {
-		t.Error("missing version field")
+	if m["version"] != "9.9.9-test" {
+		t.Errorf("version = %v, want 9.9.9-test (dynamic version not wired)", m["version"])
 	}
 }
 
