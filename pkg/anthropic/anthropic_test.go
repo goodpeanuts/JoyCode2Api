@@ -8,16 +8,23 @@ import (
 )
 
 func TestResolveModel(t *testing.T) {
-	tests := []struct{ input, expected string }{
-		{"claude-sonnet-4-20250514", "JoyAI-Code"},
-		{"claude-opus-4", "JoyAI-Code"},
-		{"claude-haiku-4-5-20251001", "GLM-4.7"},
-		{"unknown-model", "JoyAI-Code"},
+	tests := []struct {
+		name           string
+		model          string
+		accountDefault string
+		systemDefault  string
+		expected       string
+	}{
+		{"known joycode model passes through", "GLM-4.7", "", "", "GLM-4.7"},
+		{"unknown model falls back to default", "claude-sonnet-4-20250514", "", "", "JoyAI-Code"},
+		{"account default overrides for unknown model", "claude-opus-4", "Kimi-K2.6", "GLM-5.1", "Kimi-K2.6"},
+		{"system default used when no account default", "unknown-model", "", "GLM-5.1", "GLM-5.1"},
 	}
 	for _, tt := range tests {
-		got := resolveModel(tt.input)
+		got := resolveModel(tt.model, tt.accountDefault, tt.systemDefault)
 		if got != tt.expected {
-			t.Errorf("resolveModel(%q) = %q, want %q", tt.input, got, tt.expected)
+			t.Errorf("%s: resolveModel(%q, %q, %q) = %q, want %q",
+				tt.name, tt.model, tt.accountDefault, tt.systemDefault, got, tt.expected)
 		}
 	}
 }
@@ -32,7 +39,7 @@ func TestTranslateRequest(t *testing.T) {
 		},
 		Temperature: &temp,
 	}
-	body := TranslateRequest(req)
+	body := TranslateRequest(req, "", "")
 
 	if body["model"] != "JoyAI-Code" {
 		t.Errorf("model = %v, want JoyAI-Code", body["model"])
@@ -61,7 +68,7 @@ func TestTranslateRequestWithSystem(t *testing.T) {
 			{Role: "user", Content: json.RawMessage(`"Hi"`)},
 		},
 	}
-	body := TranslateRequest(req)
+	body := TranslateRequest(req, "", "")
 	msgs := body["messages"].([]map[string]interface{})
 	if len(msgs) != 2 {
 		t.Fatalf("expected 2 messages (system + user), got %d", len(msgs))
