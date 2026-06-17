@@ -88,6 +88,16 @@ docker build -t joycode-proxy .
 docker run -p 34891:34891 joycode-proxy
 ```
 
+> **构建时连不上 Alpine 源?** 如果 `docker build` 卡在 `apk add` 并报 `ca-certificates`/`gcc`/`musl-dev` "no such package"，根因通常是网络连不上官方源 `dl-cdn.alpinelinux.org`（国内常见）。用 `ALPINE_MIRROR` 构建参数切到国内镜像即可：
+>
+> ```bash
+> docker build \
+>   --build-arg ALPINE_MIRROR=https://mirrors.aliyun.com/alpine \
+>   -t joycode-proxy .
+> ```
+>
+> 镜像源任选其一（写到 `/alpine` 为止）：阿里云 `https://mirrors.aliyun.com/alpine`、清华 `https://mirrors.tuna.tsinghua.edu.cn/alpine`、中科大 `https://mirrors.ustc.edu.cn/alpine`。若 `go mod download` 也慢，可在构建环境设 `GOPROXY=https://goproxy.cn,direct`。
+
 ### 启动
 
 ```bash
