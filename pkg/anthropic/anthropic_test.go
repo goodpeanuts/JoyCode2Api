@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 )
 
 func TestResolveModel(t *testing.T) {
@@ -16,7 +18,7 @@ func TestResolveModel(t *testing.T) {
 		expected       string
 	}{
 		{"known joycode model passes through", "GLM-4.7", "", "", "GLM-4.7"},
-		{"unknown model falls back to default", "claude-sonnet-4-20250514", "", "", "JoyAI-Code"},
+		{"unknown model falls back to default", "claude-sonnet-4-20250514", "", "", joycode.DefaultModel},
 		{"account default overrides for unknown model", "claude-opus-4", "Kimi-K2.6", "GLM-5.1", "Kimi-K2.6"},
 		{"system default used when no account default", "unknown-model", "", "GLM-5.1", "GLM-5.1"},
 	}
@@ -41,8 +43,8 @@ func TestTranslateRequest(t *testing.T) {
 	}
 	body := TranslateRequest(req, "", "")
 
-	if body["model"] != "JoyAI-Code" {
-		t.Errorf("model = %v, want JoyAI-Code", body["model"])
+	if body["model"] != joycode.DefaultModel {
+		t.Errorf("model = %v, want %s", body["model"], joycode.DefaultModel)
 	}
 	if body["max_tokens"] != 1024 {
 		t.Errorf("max_tokens = %v, want 1024", body["max_tokens"])
