@@ -301,6 +301,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	chunkCount := 0
 	var streamInTk, streamOutTk int
+	finishReasonSeen := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -386,6 +387,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 
 		if choice.FinishReason != nil {
 			fr := *choice.FinishReason
+			finishReasonSeen = true
 			reqLog(r).Info("stream completed", "chunks", chunkCount, "reason", fr, "tools", len(toolCalls))
 
 			// Ensure at least one content block exists — Anthropic SDK requires it
@@ -423,80 +425,63 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 				}
 			}
 
-			stopReason := "end_turn"
-			switch fr {
-			case "tool_calls":
-				stopReason = "tool_use"
-			case "length":
-				stopReason = "max_tokens"
-			case "stop":
-				stopReason = "end_turn"
-				case "content_filter":
+			if fr == "content_filter" {
+				// Don't disguise a filter-truncated turn as a clean end_turn
+				// (issue #2). Blocks are already closed above; surface an error.
+				reqLog(r).Warn("upstream content_filter mid-stream, surfacing as error")
+				writeStreamError(w, flusher, "上游内容安全策略拦截了本次回复，输出可能不完整。结束原因: content_filter")
+			} else {
+				stopReason := "end_turn"
+				switch fr {
+				case "tool_calls":
+					stopReason = "tool_use"
+				case "length":
+					stopReason = "max_tokens"
+				case "stop":
 					stopReason = "end_turn"
+				}
+				FormatSSE(w, "message_delta", sseMessageDelta{
+					Type:  "message_delta",
+					Delta: deltaStop{StopReason: stopReason},
+					Usage: struct {
+						OutputTokens int `json:"output_tokens"`
+					}{OutputTokens: totalOutput / 4},
+				})
+				FormatSSE(w, "message_stop", sseMessageStop{Type: "message_stop"})
+				flusher.Flush()
 			}
-			FormatSSE(w, "message_delta", sseMessageDelta{
-				Type:  "message_delta",
-				Delta: deltaStop{StopReason: stopReason},
-				Usage: struct {
-					OutputTokens int `json:"output_tokens"`
-				}{OutputTokens: totalOutput / 4},
-			})
-			FormatSSE(w, "message_stop", sseMessageStop{Type: "message_stop"})
-			flusher.Flush()
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		reqLog(r).Error("stream scanner error", "error", err)
-
-		// Ensure at least one content block exists
-		if !textBlockStarted && len(toolBlockStarted) == 0 {
-			textBlockStarted = true
-			FormatSSE(w, "content_block_start", sseContentBlockStart{
-				Type:         "content_block_start",
-				Index:        currentBlockIndex,
-				ContentBlock: ContentBlock{Type: "text", Text: ""},
-			})
-		}
-
+	// If the loop ended without ever seeing an upstream finish_reason, the stream
+	// was truncated — a read error (scanner.Err) or a clean EOF mid-generation.
+	// Don't fake a clean completion (issue #2): close any open content blocks for
+	// well-formed SSE, then surface an error event so the client shows a failure
+	// (and can retry) instead of a silent truncated "success". If finishReasonSeen
+	// is true the loop already emitted message_stop, so a trailing read error after
+	// a complete answer is ignored.
+	if !finishReasonSeen {
 		if textBlockStarted {
 			FormatSSE(w, "content_block_stop", sseContentBlockStop{
 				Type: "content_block_stop", Index: currentBlockIndex,
 			})
 			currentBlockIndex++
+			textBlockStarted = false
 		}
 		for i := 0; i < len(toolCalls); i++ {
 			if toolBlockStarted[i] {
-				args := toolCalls[i].Arguments
-				if args == "" {
-					args = "{}"
-				}
-				if !json.Valid([]byte(args)) {
-					args = fixPartialJSON(args)
-				}
-				FormatSSE(w, "content_block_delta", sseContentBlockDelta{
-					Type:  "content_block_delta",
-					Index: toolBlockToIdx[i],
-					Delta: deltaText{Type: "input_json_delta", PartialJSON: args},
-				})
 				FormatSSE(w, "content_block_stop", sseContentBlockStop{
 					Type: "content_block_stop", Index: toolBlockToIdx[i],
 				})
 			}
 		}
-		errorStopReason := "end_turn"
-		if len(toolBlockStarted) > 0 {
-			errorStopReason = "tool_use"
+		if err := scanner.Err(); err != nil {
+			reqLog(r).Error("stream ended abnormally before finish_reason", "error", err, "chunks", chunkCount)
+			writeStreamError(w, flusher, "读取上游流式响应失败，本次回复不完整，请重试。原始错误: "+err.Error())
+		} else {
+			reqLog(r).Warn("stream closed before finish_reason (premature upstream close)", "chunks", chunkCount)
+			writeStreamError(w, flusher, "上游在返回结束标记前断开了流式响应，本次回复可能不完整，请重试。")
 		}
-		FormatSSE(w, "message_delta", sseMessageDelta{
-			Type:  "message_delta",
-			Delta: deltaStop{StopReason: errorStopReason},
-			Usage: struct {
-				OutputTokens int `json:"output_tokens"`
-			}{OutputTokens: totalOutput / 4},
-		})
-		FormatSSE(w, "message_stop", sseMessageStop{Type: "message_stop"})
-		flusher.Flush()
 	}
 	if streamInTk > 0 || streamOutTk > 0 {
 		store.SetTokenUsage(r, streamInTk, streamOutTk)
@@ -525,6 +510,7 @@ func (h *Handler) handleNativeAnthropicStream(w http.ResponseWriter, r *http.Req
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var inTk, outTk int
 	pendingEvent := ""
+	sawTerminal := false
 	for scanner.Scan() {
 		payload := unwrapNativeAnthropicSSE(scanner.Text())
 		if payload == "" {
@@ -544,6 +530,7 @@ func (h *Handler) handleNativeAnthropicStream(w http.ResponseWriter, r *http.Req
 			fmt.Fprintln(w, "data: [DONE]")
 			fmt.Fprintln(w)
 			flusher.Flush()
+			sawTerminal = true
 			continue
 		}
 		if !strings.HasPrefix(payload, "{") {
@@ -553,6 +540,9 @@ func (h *Handler) handleNativeAnthropicStream(w http.ResponseWriter, r *http.Req
 		if eventName == "" {
 			eventName = nativeAnthropicEventType(payload)
 		}
+		if eventName == "message_stop" || eventName == "error" {
+			sawTerminal = true
+		}
 		if eventName != "" {
 			fmt.Fprintf(w, "event: %s\n", eventName)
 		}
@@ -561,7 +551,17 @@ func (h *Handler) handleNativeAnthropicStream(w http.ResponseWriter, r *http.Req
 		pendingEvent = ""
 		flusher.Flush()
 	}
-	if err := scanner.Err(); err != nil {
+	// Surface a premature upstream close (no message_stop/[DONE]) as an error
+	// rather than letting the client hang or treat it as done (issue #2).
+	if !sawTerminal {
+		if err := scanner.Err(); err != nil {
+			reqLog(r).Error("native anthropic stream ended abnormally before message_stop", "error", err)
+			writeStreamError(w, flusher, "读取上游流式响应失败，本次回复不完整，请重试。原始错误: "+err.Error())
+		} else {
+			reqLog(r).Warn("native anthropic stream closed before message_stop (premature upstream close)")
+			writeStreamError(w, flusher, "上游在返回结束标记前断开了流式响应，本次回复可能不完整，请重试。")
+		}
+	} else if err := scanner.Err(); err != nil {
 		reqLog(r).Error("native anthropic stream scanner error", "error", err)
 	}
 	if inTk > 0 || outTk > 0 {
@@ -1017,6 +1017,17 @@ func writeAnthropicJSON(w http.ResponseWriter, code int, v interface{}) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(code)
 	w.Write(b)
+}
+
+// writeStreamError emits an Anthropic `error` SSE event mid-stream. Used when an
+// already-started stream is truncated, so the client surfaces a failure (and can
+// retry) instead of treating a partial response as a clean completion (issue #2).
+func writeStreamError(w http.ResponseWriter, flusher http.Flusher, msg string) {
+	FormatSSE(w, "error", map[string]interface{}{
+		"type":  "error",
+		"error": map[string]string{"type": "api_error", "message": msg},
+	})
+	flusher.Flush()
 }
 
 func writeAnthropicError(w http.ResponseWriter, code int, msg string) {
