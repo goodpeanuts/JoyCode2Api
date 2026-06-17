@@ -798,57 +798,6 @@ func updateNativeAnthropicUsage(payload string, inputTokens, outputTokens *int) 
 	}
 }
 
-// fixPartialJSON attempts to close unclosed JSON objects/arrays in truncated tool arguments.
-func fixPartialJSON(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "{}"
-	}
-	objDepth := 0
-	arrDepth := 0
-	inStr := false
-	escape := false
-	for _, ch := range s {
-		if escape {
-			escape = false
-			continue
-		}
-		if ch == '\\' && inStr {
-			escape = true
-			continue
-		}
-		if ch == '"' {
-			inStr = !inStr
-			continue
-		}
-		if inStr {
-			continue
-		}
-		switch ch {
-		case '{':
-			objDepth++
-		case '}':
-			objDepth--
-		case '[':
-			arrDepth++
-		case ']':
-			arrDepth--
-		}
-	}
-	if inStr {
-		s += "\""
-	}
-	for arrDepth > 0 {
-		s += "]"
-		arrDepth--
-	}
-	for objDepth > 0 {
-		s += "}"
-		objDepth--
-	}
-	return s
-}
-
 // connectStreamWithRetry attempts to connect to upstream with retries.
 // Peeks at the first SSE line to detect errors before returning the response.
 func (h *Handler) connectStreamWithRetry(r *http.Request, jcBody map[string]interface{}, client *joycode.Client) (*http.Response, error) {
