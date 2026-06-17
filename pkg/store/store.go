@@ -1131,13 +1131,13 @@ func (s *Store) GetAllTimeTotals() (*AllTimeTotals, error) {
 
 func (s *Store) GetHourlyStats() ([]HourlyData, error) {
 	rows, err := s.db.Query(`
-		SELECT strftime('%m-%d %H', created_at, 'localtime') as hour,
+		SELECT strftime('%m-%d %H', created_at) as hour,
 			COUNT(*) as count,
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
 			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END)
 		FROM request_logs
-		WHERE created_at >= datetime('now', '-24 hours')
+		WHERE created_at >= datetime('now', 'localtime', '-24 hours')
 		GROUP BY hour ORDER BY hour`)
 	if err != nil {
 		return nil, err
@@ -1157,7 +1157,7 @@ func (s *Store) GetHourlyStats() ([]HourlyData, error) {
 
 func (s *Store) GetAccountStats(userID string) (*AccountStats, error) {
 	as := &AccountStats{UserID: userID}
-	tf := "created_at >= datetime('now', '-24 hours')"
+	tf := "created_at >= datetime('now', 'localtime', '-24 hours')"
 
 	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.TotalRequests)
 	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.AvgLatencyMs)
@@ -1203,7 +1203,7 @@ func (s *Store) GetAccountStats(userID string) (*AccountStats, error) {
 
 	// Hourly breakdown for last 24 hours
 	hRows, err := s.db.Query(`
-		SELECT strftime('%m-%d %H', created_at, 'localtime') as hour,
+		SELECT strftime('%m-%d %H', created_at) as hour,
 			COUNT(*) as count,
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
@@ -1315,7 +1315,7 @@ func (s *Store) CleanupOldLogs(days int) (int64, error) {
 		return 0, nil
 	}
 	result, err := s.db.Exec(
-		"DELETE FROM request_logs WHERE created_at < datetime('now', '-' || ? || ' days')",
+		"DELETE FROM request_logs WHERE created_at < datetime('now', 'localtime', '-' || ? || ' days')",
 		days,
 	)
 	if err != nil {
