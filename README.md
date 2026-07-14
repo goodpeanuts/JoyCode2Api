@@ -104,7 +104,39 @@ docker run -p 34891:34891 joycode-proxy
 ./joycode_proxy_bin serve
 ```
 
-默认监听 `0.0.0.0:34891`。macOS 首次启动会自动从本地 JoyCode 客户端读取凭据，不需要手动配。
+默认监听 `0.0.0.0:34891`。macOS 首次启动会自动从本地已登录的凭据读取 ptKey/userId，不需要手动配——会按顺序尝试 **JoyCode VS Code 插件**（`Code/User/globalStorage/state.vscdb`）和 **JoyCoder 桌面 IDE**（`JoyCode/User/globalStorage/state.vscdb`），谁登录用谁。
+
+> 默认请求"方言"已对齐 **VS Code 插件 + 京东 ERP 登录**环境（`loginType=ERP`、`tenant=JD`、`client=VS Code`、`source-type=joycoder-plugin`、UA=`node`）。如需切换到 JoyCoder 桌面 IDE 方言，打开 Dashboard → 设置 → 上游方言，实时修改即可生效，无需重启。
+
+### 后台设置
+
+打开 `http://localhost:34891` → 设置页面，可实时修改以下配置：
+
+**模型配置**：默认模型、默认最大输出 Token
+
+**连接优化**：最大重试次数、请求超时、最大连接数
+
+**日志与监控**：启用请求日志、日志保留天数
+
+**上游方言**（影响发送给 JoyCode 后端的请求头和 body）：
+
+| 设置项 | 默认值 | 作用 |
+|--------|--------|------|
+| 登录类型 (loginType) | `ERP` | `loginType` 请求头（凭据自带的值优先） |
+| 来源类型 (source-type) | `joycoder-plugin` | `source-type` 请求头 |
+| 客户端标识 (client) | `VS Code` | body 里的 `client` 字段 |
+| 客户端版本 (clientVersion) | `3.8.63` | body 里的 `clientVersion` 字段 |
+| User-Agent | `node` | `User-Agent` 请求头 |
+| 租户 (tenant) | `JD` | body 里的 `tenant`（凭据自带的值优先） |
+
+JoyCoder 桌面 IDE 用户只需把方言改成：`loginType=N_PIN_PC`、`source-type=joycoder-ide`、`client=JoyCode`、`clientVersion=2.7.5`、`tenant=JOYCODE`。
+
+凭据源（覆盖自动探测的路径，仅限部署级别使用）：
+
+| 变量 | 作用 |
+|------|------|
+| `JOYCODE_STATE_DB` | 显式指定 JoyCoder 桌面 IDE 的 `state.vscdb` 路径 |
+| `JOYCODE_VSCODE_STATE_DB` | 显式指定 JoyCode VS Code 插件所在的 `state.vscdb` 路径 |
 
 ### 接到 Claude Code
 
@@ -136,11 +168,18 @@ claude
 2. **手动添加**：若你已经有 `pt_key`，可在「手动添加」里直接填。
    - `pt_key`：来自上面 OAuth 回调 URL 的 `pt_key` 参数，或本地 JoyCode IDE 的 `state.vscdb`。
    - `user_id`：JoyCode 客户端 → 设置 → 个人信息。
-3. **挂载本地凭据**：如果宿主机装了 JoyCode IDE，可把其状态库挂进容器，让「一键导入」可用：
+3. **挂载本地凭据**：如果宿主机装了 JoyCode，可把其状态库挂进容器，让「一键导入」可用。IDE 用 `JOYCODE_STATE_DB`，VS Code 插件用 `JOYCODE_VSCODE_STATE_DB`：
    ```bash
+   # JoyCoder 桌面 IDE
    docker run -p 34891:34891 \
      -e JOYCODE_STATE_DB=/data/state.vscdb \
-     -v /path/to/JoyCode/state.vscdb:/data/state.vscdb:ro \
+     -v "/Users/me/Library/Application Support/JoyCode/User/globalStorage/state.vscdb":/data/state.vscdb:ro \
+     joycode-proxy
+
+   # JoyCode VS Code 插件
+   docker run -p 34891:34891 \
+     -e JOYCODE_VSCODE_STATE_DB=/data/state.vscdb \
+     -v "/Users/me/Library/Application Support/Code/User/globalStorage/state.vscdb":/data/state.vscdb:ro \
      joycode-proxy
    ```
 

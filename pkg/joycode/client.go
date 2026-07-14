@@ -19,19 +19,31 @@ import (
 )
 
 const (
-	BaseURL       = "https://joycode-api.jd.com"
-	SaasBaseURL   = "http://joycode-api-saas.jd.com"
-	DefaultModel  = "JoyAI-Code-1.5"
-	ClientVersion = "2.7.5"
-	UserAgent     = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-		"AppleWebKit/537.36 (KHTML, like Gecko) " +
-		"JoyCode/2.7.5 Chrome/133.0.0.0 Electron/35.2.0 Safari/537.36"
+	BaseURL      = "https://joycode-api.jd.com"
+	SaasBaseURL  = "http://joycode-api-saas.jd.com"
+	DefaultModel = "JoyAI-Code-1.5"
+
+	// 方言默认值（面向 ERP / VS Code 插件环境；可在 Dashboard 后台实时覆盖）
+	DefaultLoginType     = "ERP"
+	DefaultSourceType    = "joycoder-plugin"
+	DefaultClient        = "VS Code"
+	DefaultClientVersion = "3.8.63"
+	DefaultUserAgent     = "node"
+	DefaultTenant        = "JD"
 
 	// color gateway 签名（逆向自 JoyCode 2.7.5 / joycoder-editor 3.8.57）
 	DefaultColorBaseURL = "https://api-ai.jd.com"
 	colorGatewayAppID   = "joycode_ide"
 	colorGatewayPath    = "/api"
 	colorHMACKey        = "0691a3f0b37b4a85aeb63ad0fc7db3ed"
+)
+
+// 导出的变量引用常量默认值，保持外部引用（version.go / 测试）不断。
+// 这些变量本身在 init 时即为常量值；运行时方言由 Client 实例字段承载，
+// Dashboard 后台通过 SetDialect() 注入，不需要改这些全局变量。
+var (
+	ClientVersion = DefaultClientVersion
+	UserAgent     = DefaultUserAgent
 )
 
 // colorEndpoint 把旧 v1 路径映射到 (functionId, v2 路径)。
@@ -49,16 +61,32 @@ var colorEndpoints = map[string]colorEndpoint{
 	"/api/saas/anthropic/v1/messages":      {"anthropic_completions", "/api/saas/anthropic/v1/messages"},
 }
 
+// Models 列出上游 joycode_modelList 返回的 chatApiModel 名（即真正透传给上游的 model 值）。
+// ResolveModel/resolveModel 据此判断是否原样透传；未命中则回退到默认模型。
 var Models = []string{
 	"JoyAI-Code",
-	"Claude-Opus-4.7",
-	"MiniMax-M2.7",
-	"Kimi-K2.6",
-	"Kimi-K2.5",
-	"GLM-5.1",
-	"GLM-5",
-	"GLM-4.7",
+	"JoyAI-Code-1.5",
+	"JoyCode-Base-V3",
+	"Claude-Opus-4.6-hq",
+	"Claude-Opus-4.7-hq",
+	"Claude-Opus-4.8-hq",
+	"Claude-Sonnet-4.6-hq",
+	"DeepSeek-V4-Pro",
+	"DeepSeek-V4-Pro-agent",
 	"Doubao-Seed-2.0-pro",
+	"Doubao-Seed-2.0-pro-agent",
+	"GLM-5",
+	"GLM-5-agent",
+	"GLM-5-jcloud",
+	"GLM-5.1",
+	"GLM-5.1-agent",
+	"GPT 5.3-codex",
+	"Kimi-K2.6",
+	"Kimi-K2.6-agent",
+	"MiniMax-M2.7",
+	"MiniMax-M2.7-agent",
+	"MiniMax-M3",
+	"MiniMax-M3-agent",
 }
 
 type Client struct {
@@ -72,6 +100,11 @@ type Client struct {
 	LoginType      string
 	OrgFullName    string
 	httpClient     *http.Client
+	// 方言字段（凭据不携带的客户端身份标识；由 SetDialect 从 DB settings 注入）
+	sourceType    string
+	clientName    string
+	clientVersion string
+	userAgent     string
 }
 
 type gzipReadCloser struct {
@@ -91,11 +124,15 @@ func (r *gzipReadCloser) Close() error {
 
 func NewClient(ptKey, userID string) *Client {
 	return &Client{
-		PtKey:        ptKey,
-		UserID:       userID,
-		SessionID:    newHexID(),
-		ColorBaseURL: DefaultColorBaseURL,
-		httpClient:   &http.Client{Timeout: 30 * time.Minute},
+		PtKey:         ptKey,
+		UserID:        userID,
+		SessionID:     newHexID(),
+		ColorBaseURL:  DefaultColorBaseURL,
+		httpClient:    &http.Client{Timeout: 30 * time.Minute},
+		sourceType:    DefaultSourceType,
+		clientName:    DefaultClient,
+		clientVersion: DefaultClientVersion,
+		userAgent:     DefaultUserAgent,
 	}
 }
 
@@ -126,6 +163,31 @@ func (c *Client) SetColorContext(colorBaseURL, masterBaseURL, tenant, loginType,
 	c.Tenant = tenant
 	c.LoginType = loginType
 	c.OrgFullName = orgFullName
+}
+
+// SetDialect 设置上游请求方言字段（凭据不携带的客户端身份标识 + 凭据缺失时的 loginType/tenant 回退）。
+// 调用方从 DB settings 读取后注入；空值保持当前默认。
+// loginType/tenant：如果凭据已通过 SetColorContext 设置了非空值，凭据值优先，此处不覆盖。
+func (c *Client) SetDialect(sourceType, clientName, clientVersion, userAgent, loginType, tenant string) {
+	if sourceType != "" {
+		c.sourceType = sourceType
+	}
+	if clientName != "" {
+		c.clientName = clientName
+	}
+	if clientVersion != "" {
+		c.clientVersion = clientVersion
+	}
+	if userAgent != "" {
+		c.userAgent = userAgent
+	}
+	// loginType / tenant：仅当凭据未提供时才用 DB setting 兜底
+	if c.LoginType == "" && loginType != "" {
+		c.LoginType = loginType
+	}
+	if c.Tenant == "" && tenant != "" {
+		c.Tenant = tenant
+	}
 }
 
 func newHexID() string {
@@ -170,14 +232,14 @@ func (c *Client) requestURL(endpoint string) string {
 func (c *Client) headers() http.Header {
 	loginType := c.LoginType
 	if loginType == "" {
-		loginType = "N_PIN_PC"
+		loginType = DefaultLoginType
 	}
 	return http.Header{
 		"Content-Type":    {"application/json; charset=UTF-8"},
-		"source-type":     {"joycoder-ide"},
+		"source-type":     {c.sourceType},
 		"ptKey":           {c.PtKey},
 		"loginType":       {loginType},
-		"User-Agent":      {UserAgent},
+		"User-Agent":      {c.userAgent},
 		"Accept":          {"*/*"},
 		"Accept-Encoding": {"gzip, deflate"},
 		"Accept-Language": {"zh-CN,zh;q=0.9,en;q=0.8"},
@@ -191,14 +253,14 @@ func (c *Client) anthropicHeaders() http.Header {
 	}
 	loginType := c.LoginType
 	if loginType == "" {
-		loginType = "PIN_JD_CLOUD"
+		loginType = DefaultLoginType
 	}
 	return http.Header{
 		"Content-Type":    {"application/json; charset=utf-8"},
-		"source-type":     {"joycoder-ide"},
+		"source-type":     {c.sourceType},
 		"ptKey":           {ptKey},
 		"loginType":       {loginType},
-		"User-Agent":      {UserAgent},
+		"User-Agent":      {c.userAgent},
 		"Accept":          {"*/*"},
 		"Accept-Encoding": {"gzip, deflate"},
 		"Accept-Language": {"zh-CN,zh;q=0.9,en;q=0.8"},
@@ -208,14 +270,14 @@ func (c *Client) anthropicHeaders() http.Header {
 func (c *Client) prepareBody(extra map[string]interface{}) map[string]interface{} {
 	tenant := c.Tenant
 	if tenant == "" {
-		tenant = "JOYCODE"
+		tenant = DefaultTenant
 	}
 	body := map[string]interface{}{
 		"tenant":        tenant,
 		"orgFullName":   c.OrgFullName,
 		"userId":        c.UserID,
-		"client":        "JoyCode",
-		"clientVersion": ClientVersion,
+		"client":        c.clientName,
+		"clientVersion": c.clientVersion,
 		"language":      "UNKNOWN",
 	}
 	for k, v := range extra {
@@ -227,14 +289,14 @@ func (c *Client) prepareBody(extra map[string]interface{}) map[string]interface{
 func (c *Client) prepareAnthropicBody(extra map[string]interface{}) map[string]interface{} {
 	tenant := c.Tenant
 	if tenant == "" {
-		tenant = "JD"
+		tenant = DefaultTenant
 	}
 	body := map[string]interface{}{
 		"tenant":        tenant,
 		"orgFullName":   c.OrgFullName,
 		"userId":        c.UserID,
-		"client":        "JoyCode",
-		"clientVersion": ClientVersion,
+		"client":        c.clientName,
+		"clientVersion": c.clientVersion,
 		"language":      "UNKNOWN",
 		"stream":        true,
 	}

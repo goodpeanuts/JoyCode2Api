@@ -32,19 +32,7 @@ import CommandTooltip from '../components/CommandTooltip';
 import QRLoginModal from '../components/QRLoginModal';
 import { useNavigate } from 'react-router-dom';
 import { api, accountDisplayName } from '../api';
-import type { Account } from '../api';
-
-const BUILTIN_MODELS = [
-  { label: 'JoyAI-Code（推荐）', value: 'JoyAI-Code' },
-  { label: 'Claude-Opus-4.7', value: 'Claude-Opus-4.7' },
-  { label: 'GLM-5.1', value: 'GLM-5.1' },
-  { label: 'GLM-5', value: 'GLM-5' },
-  { label: 'GLM-4.7', value: 'GLM-4.7' },
-  { label: 'Kimi-K2.6', value: 'Kimi-K2.6' },
-  { label: 'Kimi-K2.5', value: 'Kimi-K2.5' },
-  { label: 'MiniMax-M2.7', value: 'MiniMax-M2.7' },
-  { label: 'Doubao-Seed-2.0-pro', value: 'Doubao-Seed-2.0-pro' },
-];
+import type { Account, ModelInfo } from '../api';
 
 const isClaudeModel = (model?: string) => model === 'Claude-Opus-4.7';
 
@@ -164,6 +152,7 @@ const Accounts: React.FC = () => {
   const [oauthSubmitting, setOauthSubmitting] = useState(false);
   const oauthCountRef = React.useRef(0);
   const oauthPollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const [dynamicModels, setDynamicModels] = useState<ModelInfo[]>([]);
   const selectedModel = Form.useWatch('default_model', form);
 
   const sensors = useSensors(
@@ -183,7 +172,16 @@ const Accounts: React.FC = () => {
     }
   };
 
-  useEffect(() => { fetchAccounts(); }, []);
+  const fetchDynamicModels = async () => {
+    try {
+      const data = await api.listModels();
+      setDynamicModels(data);
+    } catch {
+      // fallback to empty, will use hardcoded names
+    }
+  };
+
+  useEffect(() => { fetchAccounts(); fetchDynamicModels(); }, []);
 
 
   const handleAdd = async (values: { pt_key: string; user_id: string; is_default?: boolean; default_model?: string }) => {
@@ -718,7 +716,22 @@ const Accounts: React.FC = () => {
           >
             <Select
               placeholder="留空使用系统默认模型"
-              options={BUILTIN_MODELS}
+              options={dynamicModels.map(m => ({
+                label: m.name || m.id,
+                value: m.id,
+                description: m.description,
+              }))}
+              optionRender={(option) => {
+                const desc = (option.data as { description?: string })?.description;
+                return desc ? (
+                  <Tooltip title={desc} placement="right" mouseEnterDelay={0.3}>
+                    <div>
+                      <div>{option.label}</div>
+                      <div style={{ fontSize: 11, color: '#999', lineHeight: '14px' }}>{desc}</div>
+                    </div>
+                  </Tooltip>
+                ) : <>{option.label}</>;
+              }}
               allowClear
             />
           </Form.Item>

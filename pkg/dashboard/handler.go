@@ -22,6 +22,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/auth"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/configref"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/keepalive"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/proxy"
@@ -33,18 +34,26 @@ type Handler struct {
 	staticFS  fs.FS
 	modelList []string
 	keeper    *keepalive.Keeper
+	refresher *configref.ConfigRefresher
 	// Version is the proxy version reported by /api/health; set by the server
 	// at startup (the build-time Version lives in package main).
 	Version string
 }
 
-func NewHandler(s *store.Store, staticFS fs.FS, k *keepalive.Keeper) *Handler {
-	return &Handler{
+func NewHandler(s *store.Store, staticFS fs.FS, k *keepalive.Keeper, r *configref.ConfigRefresher) *Handler {
+	h := &Handler{
 		store:     s,
 		staticFS:  staticFS,
 		modelList: joycode.Models,
 		keeper:    k,
+		refresher: r,
 	}
+	if r != nil {
+		if names := r.GetModelNames(); len(names) > 0 {
+			h.modelList = names
+		}
+	}
+	return h
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
@@ -73,6 +82,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/github-stars", h.handleGitHubStars)
 	mux.HandleFunc("/api/accounts-export", h.handleExportAccounts)
 	mux.HandleFunc("/api/accounts-import", h.handleImportAccounts)
+	mux.HandleFunc("/api/config/refresh", h.handleConfigRefresh)
+	mux.HandleFunc("/api/config/status", h.handleConfigStatus)
 }
 
 // GitHub Stars cache
@@ -549,7 +560,7 @@ func (h *Handler) addAccount(w http.ResponseWriter, r *http.Request) {
 		isDefault = *body.IsDefault
 	}
 
-	if err := h.store.AddAccount(body.UserID, body.PtKey, body.Nickname, isDefault, body.DefaultModel); err != nil {
+	if err := h.store.AddAccount(body.UserID, body.PtKey, body.Nickname, isDefault, body.DefaultModel, nil); err != nil {
 		slog.Error("add account", "user_id", body.UserID, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -628,7 +639,13 @@ func (h *Handler) handleAutoLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.store.AddAccount(userID, creds.PtKey, nickname, isDefault, "GLM-5.1"); err != nil {
+	if err := h.store.AddAccount(userID, creds.PtKey, nickname, isDefault, "GLM-5.1", &store.AccountCreds{
+		LoginType:     creds.LoginType,
+		Tenant:        creds.Tenant,
+		ColorBaseURL:  creds.ColorBaseURL,
+		MasterBaseURL: creds.MasterBaseURL,
+		OrgFullName:   creds.OrgFullName,
+	}); err != nil {
 		slog.Error("auto-login: save account failed", "user_id", userID, "error", err)
 		writeError(w, http.StatusInternalServerError, "保存账号失败: "+err.Error())
 		return
@@ -773,24 +790,25 @@ func (h *Handler) handleBrowserLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // validateAndSavePtKey validates a pt_key with JoyCode API and saves the account.
-// Returns userID, nickname on success, or an error on failure.
-func (h *Handler) validateAndSavePtKey(ptKey string) (userID, nickname string, err error) {
+// Returns userID, nickname, and extracted credential fields on success, or an error on failure.
+func (h *Handler) validateAndSavePtKey(ptKey string) (userID, nickname string, creds *store.AccountCreds, err error) {
 	if ptKey == "" {
-		return "", "", fmt.Errorf("missing pt_key")
+		return "", "", nil, fmt.Errorf("missing pt_key")
 	}
 
 	client := joycode.NewClient(ptKey, "")
 	userInfo, apiErr := client.UserInfo()
 	if apiErr != nil {
-		return "", "", fmt.Errorf("userInfo validation failed: %w", apiErr)
+		return "", "", nil, fmt.Errorf("userInfo validation failed: %w", apiErr)
 	}
 
 	code, _ := userInfo["code"].(float64)
 	if code != 0 {
 		msg, _ := userInfo["msg"].(string)
-		return "", "", fmt.Errorf("userInfo API error (code=%.0f): %s", code, msg)
+		return "", "", nil, fmt.Errorf("userInfo API error (code=%.0f): %s", code, msg)
 	}
 
+	creds = &store.AccountCreds{}
 	if data, ok := userInfo["data"].(map[string]interface{}); ok {
 		if id, ok := data["userId"].(string); ok && id != "" {
 			userID = id
@@ -798,13 +816,28 @@ func (h *Handler) validateAndSavePtKey(ptKey string) (userID, nickname string, e
 		if name, ok := data["realName"].(string); ok && name != "" {
 			nickname = name
 		}
+		if v, ok := data["loginType"].(string); ok {
+			creds.LoginType = v
+		}
+		if v, ok := data["tenant"].(string); ok {
+			creds.Tenant = v
+		}
+		if v, ok := data["colorBaseUrl"].(string); ok {
+			creds.ColorBaseURL = v
+		}
+		if v, ok := data["masterBaseUrl"].(string); ok {
+			creds.MasterBaseURL = v
+		}
+		if v, ok := data["orgFullName"].(string); ok {
+			creds.OrgFullName = v
+		}
 	}
 	if nickname == "" {
 		nickname = userID
 	}
 
 	if userID == "" {
-		return "", "", fmt.Errorf("无法获取用户ID，请重新授权")
+		return "", "", nil, fmt.Errorf("无法获取用户ID，请重新授权")
 	}
 
 	isDefault := true
@@ -816,12 +849,12 @@ func (h *Handler) validateAndSavePtKey(ptKey string) (userID, nickname string, e
 		}
 	}
 
-	if saveErr := h.store.AddAccount(userID, ptKey, nickname, isDefault, "GLM-5.1"); saveErr != nil {
-		return "", "", fmt.Errorf("save account failed: %w", saveErr)
+	if saveErr := h.store.AddAccount(userID, ptKey, nickname, isDefault, "GLM-5.1", creds); saveErr != nil {
+		return "", "", nil, fmt.Errorf("save account failed: %w", saveErr)
 	}
 
 	slog.Info("oauth: account saved", "user_id", userID, "nickname", nickname)
-	return userID, nickname, nil
+	return userID, nickname, creds, nil
 }
 
 func (h *Handler) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
@@ -834,11 +867,27 @@ func (h *Handler) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("oauth-callback: received", "login_type", loginType, "tenant", tenant, "auth_key", authKey, "pt_key_len", len(ptKey))
 
-	userID, _, err := h.validateAndSavePtKey(ptKey)
+	userID, _, creds, err := h.validateAndSavePtKey(ptKey)
 	if err != nil {
 		slog.Error("oauth-callback: failed", "error", err)
 		http.Redirect(w, r, "/?login_error="+url.QueryEscape(err.Error()), http.StatusFound)
 		return
+	}
+
+	// Override credential fields with values from the OAuth callback URL (more authoritative than userInfo defaults)
+	if loginType != "" || tenant != "" {
+		if creds == nil {
+			creds = &store.AccountCreds{}
+		}
+		if loginType != "" {
+			creds.LoginType = loginType
+		}
+		if tenant != "" {
+			creds.Tenant = tenant
+		}
+		if err := h.store.UpdateAccountCreds(userID, creds); err != nil {
+			slog.Error("oauth-callback: update creds override failed", "user_id", userID, "error", err)
+		}
 	}
 
 	// Auto-issue JWT so the frontend dashboard is immediately accessible
@@ -877,7 +926,7 @@ func (h *Handler) handleOAuthSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, nickname, err := h.validateAndSavePtKey(body.PtKey)
+	userID, nickname, _, err := h.validateAndSavePtKey(body.PtKey)
 	if err != nil {
 		slog.Error("oauth-submit: failed", "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -983,7 +1032,7 @@ func (h *Handler) handleQRLoginStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.store.AddAccount(result.UserID, result.PtKey, nickname, isDefault, "GLM-5.1"); err != nil {
+	if err := h.store.AddAccount(result.UserID, result.PtKey, nickname, isDefault, "GLM-5.1", nil); err != nil {
 		slog.Error("qr-login save account failed", "user_id", result.UserID, "error", err)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"status":  "confirmed",
@@ -1141,14 +1190,22 @@ func (h *Handler) listAccountModels(w http.ResponseWriter, r *http.Request, apiK
 	models, err := client.ListModels()
 	if err != nil {
 		slog.Error("list account models", "api_key", apiKey, "error", err)
-		// Fallback to hardcoded list
+		// Fallback to refresher cache, then hardcoded list
+		if h.refresher != nil {
+			if cached := h.refresher.GetModelList(); len(cached) > 0 {
+				writeJSON(w, http.StatusOK, map[string]interface{}{
+					"models": modelInfosFromRemote(cached),
+				})
+				return
+			}
+		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"models": modelInfos(h.modelList),
 		})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"models": models})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"models": modelInfosFromRemote(models)})
 }
 
 func (h *Handler) getAccountStats(w http.ResponseWriter, r *http.Request, apiKey string) {
@@ -1283,6 +1340,18 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Serve model info from refresher cache if available
+	if h.refresher != nil {
+		if models := h.refresher.GetModelList(); len(models) > 0 {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"models":         modelInfosFromRemote(models),
+				"refresh_status": h.refresher.GetStatus(),
+			})
+			return
+		}
+	}
+
+	// Fallback to simple name list
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"models": modelInfos(h.modelList),
 	})
@@ -1292,6 +1361,31 @@ func modelInfos(models []string) []map[string]string {
 	result := make([]map[string]string, len(models))
 	for i, m := range models {
 		result[i] = map[string]string{"id": m, "name": m}
+	}
+	return result
+}
+
+// modelInfosFromRemote converts cached joycode.ModelInfo entries to the
+// {id, name, description} format expected by the frontend.
+// id = chatApiModel (the model identifier used in API calls)
+// name = label (the human-readable display name)
+// description = description (model description for tooltips)
+func modelInfosFromRemote(models []joycode.ModelInfo) []map[string]string {
+	result := make([]map[string]string, 0, len(models))
+	for _, m := range models {
+		id := m.ChatAPIModel
+		if id == "" {
+			id = m.Label
+		}
+		name := m.Label
+		if name == "" {
+			name = id
+		}
+		result = append(result, map[string]string{
+			"id":          id,
+			"name":        name,
+			"description": m.Description,
+		})
 	}
 	return result
 }
@@ -1430,5 +1524,69 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":   "ok",
 		"accounts": count,
 		"version":  version,
+	})
+}
+
+// --- Config Refresh Handler ---
+
+func (h *Handler) handleConfigRefresh(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if h.refresher == nil {
+		writeError(w, http.StatusServiceUnavailable, "config refresher not available")
+		return
+	}
+
+	// Parse optional user_id from body
+	var body map[string]string
+	if r.Body != nil {
+		data, _ := io.ReadAll(io.LimitReader(r.Body, 1024))
+		r.Body.Close()
+		json.Unmarshal(data, &body)
+	}
+
+	userID := ""
+	if body != nil {
+		userID = body["user_id"]
+	}
+
+	status := h.refresher.RefreshNow(userID)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":     status.Success,
+		"status": status,
+	})
+}
+
+// --- Config Status Handler ---
+
+func (h *Handler) handleConfigStatus(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if h.refresher == nil {
+		writeError(w, http.StatusServiceUnavailable, "config refresher not available")
+		return
+	}
+
+	status := h.refresher.GetStatus()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":         status,
+		"plugin_configs": h.refresher.GetAllPluginConfigs(),
+		"model_names":    h.refresher.GetModelNames(),
 	})
 }

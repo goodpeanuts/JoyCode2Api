@@ -64,3 +64,6 @@ coverage.out
 web/node_modules/
 web/dist/
 joycode_proxy/static/
+
+# tmp
+vscode-extension-audit.txt

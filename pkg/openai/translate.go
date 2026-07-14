@@ -103,8 +103,12 @@ func newShortID() string {
 // ResolveModel returns the model to use for the request.
 // If the client-specified model is a known JoyCode model, pass it through.
 // Otherwise fall back to the account's default model, then the global default.
-func ResolveModel(model string, accountDefault string, systemDefault string) string {
-	for _, m := range joycode.Models {
+// knownModels is the dynamic model list (from refresher), falling back to joycode.Models if empty.
+func ResolveModel(model string, accountDefault string, systemDefault string, knownModels []string) string {
+	if len(knownModels) == 0 {
+		knownModels = joycode.Models
+	}
+	for _, m := range knownModels {
 		if m == model {
 			return model
 		}

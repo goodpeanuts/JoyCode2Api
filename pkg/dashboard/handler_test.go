@@ -34,7 +34,7 @@ func setupTestHandler(t *testing.T) (*Handler, *store.Store) {
 
 	subFS := os.DirFS(staticDir)
 	k := keepalive.NewKeeper(s, time.Hour)
-	h := NewHandler(s, subFS, k)
+	h := NewHandler(s, subFS, k, nil)
 	return h, s
 }
 
@@ -192,7 +192,7 @@ func TestHandleRemoveAccount(t *testing.T) {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	s.AddAccount("del-key", "pt", "user", false, "")
+	s.AddAccount("del-key", "pt", "user", false, "", nil)
 
 	req := httptest.NewRequest("DELETE", "/api/accounts/del-key", nil)
 	w := httptest.NewRecorder()
@@ -212,8 +212,8 @@ func TestHandleSetDefault(t *testing.T) {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	s.AddAccount("key1", "pt1", "user1", true, "")
-	s.AddAccount("key2", "pt2", "user2", false, "")
+	s.AddAccount("key1", "pt1", "user1", true, "", nil)
+	s.AddAccount("key2", "pt2", "user2", false, "", nil)
 
 	req := httptest.NewRequest("PUT", "/api/accounts/key2/default", nil)
 	w := httptest.NewRecorder()
@@ -234,7 +234,7 @@ func TestHandleUpdateModel(t *testing.T) {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	s.AddAccount("key1", "pt1", "user1", true, "")
+	s.AddAccount("key1", "pt1", "user1", true, "", nil)
 
 	req := makeRequest(t, "PUT", "/api/accounts/key1/model", map[string]interface{}{
 		"default_model": "GLM-5.1",
@@ -307,7 +307,7 @@ func TestHandleStatsWithLogs(t *testing.T) {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	s.AddAccount("key1", "pt1", "user1", true, "")
+	s.AddAccount("key1", "pt1", "user1", true, "", nil)
 	s.LogRequest("key1", "JoyAI-Code", "/v1/chat", true, 200, 500, "", 0, 0)
 
 	req := httptest.NewRequest("GET", "/api/stats", nil)
@@ -422,7 +422,7 @@ func TestHandleAccountStats(t *testing.T) {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	s.AddAccount("key1", "pt1", "user1", true, "")
+	s.AddAccount("key1", "pt1", "user1", true, "", nil)
 	s.LogRequest("key1", "JoyAI-Code", "/v1/chat", true, 200, 500, "", 0, 0)
 	s.LogRequest("key1", "GLM-5.1", "/v1/msg", false, 200, 300, "", 0, 0)
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/configref"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
 )
@@ -22,9 +23,10 @@ type ClientResolver func(r *http.Request) *joycode.Client
 
 // Handler serves the Anthropic Messages API.
 type Handler struct {
-	Client   *joycode.Client
-	Resolver ClientResolver
-	store    *store.Store
+	Client    *joycode.Client
+	Resolver  ClientResolver
+	store     *store.Store
+	refresher *configref.ConfigRefresher
 }
 
 // NewHandler creates a new Anthropic API handler.
@@ -32,11 +34,27 @@ func NewHandler(c *joycode.Client, s *store.Store) *Handler {
 	return &Handler{Client: c, store: s}
 }
 
+// SetRefresher sets the config refresher for cached model access.
+func (h *Handler) SetRefresher(r *configref.ConfigRefresher) {
+	h.refresher = r
+}
+
 func (h *Handler) getClient(r *http.Request) *joycode.Client {
 	if h.Resolver != nil {
 		return h.Resolver(r)
 	}
 	return h.Client
+}
+
+// knownModels returns the current list of known model names for model resolution.
+func (h *Handler) knownModels() []string {
+	if h.refresher != nil {
+		names := h.refresher.GetModelNames()
+		if len(names) > 0 {
+			return names
+		}
+	}
+	return joycode.Models
 }
 
 // RegisterRoutes registers the Anthropic Messages API endpoint.
@@ -79,7 +97,7 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		if h.store != nil {
 			systemDefault = h.store.GetSetting("default_model")
 		}
-		resolved := resolveModel(req.Model, accountDefault, systemDefault)
+		resolved := resolveModel(req.Model, accountDefault, systemDefault, h.knownModels()...)
 		store.SetModel(r, resolved)
 		reqLog(r).Info("anthropic request", "model", req.Model, "resolved", resolved, "stream", req.Stream, "max_tokens", req.MaxTokens, "messages", len(req.Messages), "tools", len(req.Tools))
 
@@ -97,7 +115,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 	if h.store != nil {
 		systemDefault = h.store.GetSetting("default_model")
 	}
-	if ClaudeNativeEnabled(h.store) && (IsNativeAnthropicModel(req.Model) || IsNativeAnthropicModel(resolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault))) {
+	if (IsNativeAnthropicModel(req.Model) || IsNativeAnthropicModel(resolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault, h.knownModels()...))) {
 		h.handleNativeAnthropicNonStream(w, r, req, client, systemDefault)
 		return
 	}
@@ -109,7 +127,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 		slog.Warn("preemptive truncation applied (non-stream)", "rounds", rounds)
 	}
 
-	jcBody := TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
+	jcBody := TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault, h.knownModels()...)
 	logRequestDetails(r, "translated request (non-stream)", jcBody)
 	maxRetries := 3
 	if h.store != nil {
@@ -124,7 +142,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 			if isContextLimitError(lastErr.Error()) {
 				// Progressive truncation on context limit
 				if truncateMessages(req) {
-					jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
+					jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault, h.knownModels()...)
 					reqLog(r).Warn("retrying with truncated messages (non-stream)", "attempt", attempt)
 					continue
 				}
@@ -211,12 +229,12 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 		writeAnthropicError(w, 500, "streaming not supported")
 		return
 	}
-	if ClaudeNativeEnabled(h.store) && (IsNativeAnthropicModel(req.Model) || IsNativeAnthropicModel(resolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault))) {
+	if (IsNativeAnthropicModel(req.Model) || IsNativeAnthropicModel(resolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault, h.knownModels()...))) {
 		h.handleNativeAnthropicStream(w, r, req, client, flusher, systemDefault)
 		return
 	}
 
-	jcBody := TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
+	jcBody := TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault, h.knownModels()...)
 	jcBody["stream"] = true
 	logRequestDetails(r, "translated request (stream)", jcBody)
 
@@ -228,7 +246,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 		reqLog(r).Warn("preemptive truncation applied (stream)", "rounds", rounds)
 	}
 
-	jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
+	jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault, h.knownModels()...)
 	jcBody["stream"] = true
 
 	// Connect with retry, progressive auto-truncate on context limit
@@ -238,7 +256,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 		if !truncateMessages(req) {
 			break
 		}
-		jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
+		jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault, h.knownModels()...)
 		jcBody["stream"] = true
 		resp, err = h.connectStreamWithRetry(r, jcBody, client)
 	}

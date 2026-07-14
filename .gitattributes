@@ -1,0 +1,3 @@
+# Frontend build artifacts embedded via //go:embed — kept in the repo so
+# `go build` works without a Node toolchain, but collapsed in diffs/reviews.
+cmd/JoyCodeProxy/static/** linguist-generated=true -diff

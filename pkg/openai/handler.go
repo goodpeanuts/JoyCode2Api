@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/configref"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
 )
@@ -14,9 +15,10 @@ type ClientResolver func(r *http.Request) *joycode.Client
 
 // Server implements the OpenAI-compatible HTTP API.
 type Server struct {
-	Client   *joycode.Client
-	Resolver ClientResolver
-	store    *store.Store
+	Client    *joycode.Client
+	Resolver  ClientResolver
+	store     *store.Store
+	refresher *configref.ConfigRefresher
 }
 
 // NewServer creates a new OpenAI-compatible proxy server.
@@ -24,11 +26,28 @@ func NewServer(c *joycode.Client, s *store.Store) *Server {
 	return &Server{Client: c, store: s}
 }
 
+// SetRefresher sets the config refresher for cached model access.
+func (s *Server) SetRefresher(r *configref.ConfigRefresher) {
+	s.refresher = r
+}
+
 func (s *Server) getClient(r *http.Request) *joycode.Client {
 	if s.Resolver != nil {
 		return s.Resolver(r)
 	}
 	return s.Client
+}
+
+// knownModels returns the current list of known model names for model resolution.
+// Uses the refresher cache if available, otherwise falls back to joycode.Models.
+func (s *Server) knownModels() []string {
+	if s.refresher != nil {
+		names := s.refresher.GetModelNames()
+		if len(names) > 0 {
+			return names
+		}
+	}
+	return joycode.Models
 }
 
 // RegisterRoutes registers all OpenAI-compatible endpoints on the mux.
@@ -101,6 +120,16 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if !requireGET(w, r) {
 		return
 	}
+
+	// Try cached model list from refresher
+	if s.refresher != nil {
+		if models := s.refresher.GetModelList(); len(models) > 0 {
+			writeJSON(w, 200, TranslateModels(models))
+			return
+		}
+	}
+
+	// Fallback to upstream call (first startup or cache empty)
 	models, err := s.getClient(r).ListModels()
 	if err != nil {
 		slog.Error("list models upstream error", "error", err)

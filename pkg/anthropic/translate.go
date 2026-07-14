@@ -12,8 +12,8 @@ import (
 )
 
 // TranslateRequest converts an Anthropic MessageRequest to a JoyCode API body.
-func TranslateRequest(req *MessageRequest, accountDefault string, systemDefault string) map[string]interface{} {
-	model := resolveModel(req.Model, accountDefault, systemDefault)
+func TranslateRequest(req *MessageRequest, accountDefault string, systemDefault string, knownModels ...string) map[string]interface{} {
+	model := resolveModel(req.Model, accountDefault, systemDefault, knownModels...)
 	messages := buildMessages(req)
 
 	body := map[string]interface{}{
@@ -96,14 +96,7 @@ func IsNativeAnthropicModel(model string) bool {
 }
 
 func resolveNativeAnthropicModel(model string, accountDefault string, systemDefault string) string {
-	resolved := resolveModel(model, accountDefault, systemDefault)
-	if resolved == "Claude-Opus-4.7" {
-		return resolved
-	}
-	if IsNativeAnthropicModel(resolved) {
-		return "Claude-Opus-4.7"
-	}
-	return resolved
+	return resolveModel(model, accountDefault, systemDefault)
 }
 
 // convertToolsToOpenAI converts Anthropic-format tools to OpenAI function-calling format.
@@ -183,8 +176,12 @@ func TranslateResponse(jcResp map[string]interface{}, reqModel string) *MessageR
 	}
 }
 
-func resolveModel(model string, accountDefault string, systemDefault string) string {
-	for _, m := range joycode.Models {
+func resolveModel(model string, accountDefault string, systemDefault string, knownModels ...string) string {
+	models := knownModels
+	if len(models) == 0 {
+		models = joycode.Models
+	}
+	for _, m := range models {
 		if m == model {
 			return model
 		}

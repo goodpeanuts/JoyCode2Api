@@ -6,9 +6,10 @@ import {
 import {
   SaveOutlined, ReloadOutlined, QuestionCircleOutlined,
   SettingOutlined, CheckCircleOutlined, InfoCircleOutlined, LockOutlined,
+  SyncOutlined, CloudOutlined,
 } from '@ant-design/icons';
 import { api, authApi, clearToken } from '../api';
-import type { Settings } from '../api';
+import type { Settings, ConfigRefreshStatus, Account, ModelInfo } from '../api';
 
 const { Text } = Typography;
 
@@ -35,17 +36,7 @@ const FIELD_GROUPS = [
         tooltip: '当客户端未指定模型，且账号未配置默认模型时使用的 JoyCode 模型',
         placeholder: 'JoyAI-Code',
         type: 'select' as const,
-        options: [
-          { label: 'JoyAI-Code — 主力代码模型（推荐）', value: 'JoyAI-Code' },
-          { label: 'Claude-Opus-4.7', value: 'Claude-Opus-4.7' },
-          { label: 'GLM-5.1 — 智谱 GLM 5.1', value: 'GLM-5.1' },
-          { label: 'GLM-5 — 智谱 GLM 5', value: 'GLM-5' },
-          { label: 'GLM-4.7 — 智谱 GLM 4.7', value: 'GLM-4.7' },
-          { label: 'Kimi-K2.6 — Moonshot Kimi K2.6', value: 'Kimi-K2.6' },
-          { label: 'Kimi-K2.5 — Moonshot Kimi K2.5', value: 'Kimi-K2.5' },
-          { label: 'MiniMax-M2.7 — MiniMax M2.7', value: 'MiniMax-M2.7' },
-          { label: 'Doubao-Seed-2.0-pro — 豆包 Seed 2.0 Pro', value: 'Doubao-Seed-2.0-pro' },
-        ],
+        options: [], // Will be populated dynamically
       },
       {
         key: 'default_max_tokens',
@@ -109,12 +100,77 @@ const FIELD_GROUPS = [
       },
     ],
   },
+  {
+    title: '上游方言',
+    fields: [
+      {
+        key: 'login_type',
+        label: '登录类型 (loginType)',
+        tooltip: '发送给上游的 loginType 请求头。凭据自带的值优先；此处设置作为无凭据时的默认值',
+        placeholder: 'ERP',
+        type: 'select' as const,
+        options: [
+          { label: 'ERP — 京东 ERP 登录（默认）', value: 'ERP' },
+          { label: 'N_PIN_PC — JoyCoder 桌面 IDE', value: 'N_PIN_PC' },
+          { label: 'PIN_JD_CLOUD — 京东云', value: 'PIN_JD_CLOUD' },
+        ],
+      },
+      {
+        key: 'source_type',
+        label: '来源类型 (source-type)',
+        tooltip: '发送给上游的 source-type 请求头，标识客户端类型',
+        placeholder: 'joycoder-plugin',
+        type: 'select' as const,
+        options: [
+          { label: 'joycoder-plugin — VS Code 插件（默认）', value: 'joycoder-plugin' },
+          { label: 'joycoder-ide — JoyCoder 桌面 IDE', value: 'joycoder-ide' },
+        ],
+      },
+      {
+        key: 'client_name',
+        label: '客户端标识 (client)',
+        tooltip: '请求体中的 client 字段，标识客户端名称',
+        placeholder: 'VS Code',
+        type: 'input' as const,
+      },
+      {
+        key: 'client_version',
+        label: '客户端版本 (clientVersion)',
+        tooltip: '请求体中的 clientVersion 字段',
+        placeholder: '3.8.63',
+        type: 'input' as const,
+      },
+      {
+        key: 'user_agent',
+        label: 'User-Agent',
+        tooltip: '发送给上游的 User-Agent 请求头',
+        placeholder: 'node',
+        type: 'input' as const,
+      },
+      {
+        key: 'tenant',
+        label: '租户 (tenant)',
+        tooltip: '请求体中的 tenant 字段。凭据自带的值优先；此处设置作为无凭据时的默认值',
+        placeholder: 'JD',
+        type: 'select' as const,
+        options: [
+          { label: 'JD — 京东（默认）', value: 'JD' },
+          { label: 'JOYCODE — JoyCoder 通用', value: 'JOYCODE' },
+        ],
+      },
+    ],
+  },
 ];
 
 const SettingsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [changePwLoading, setChangePwLoading] = useState(false);
+  const [configRefreshing, setConfigRefreshing] = useState(false);
+  const [configStatus, setConfigStatus] = useState<ConfigRefreshStatus | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [refreshUserId, setRefreshUserId] = useState<string>('');
+  const [dynamicModels, setDynamicModels] = useState<ModelInfo[]>([]);
   const [form] = Form.useForm();
   const [pwForm] = Form.useForm();
 
@@ -144,6 +200,60 @@ const SettingsPage: React.FC = () => {
   };
 
   useEffect(() => { fetchSettings(); }, [form]);
+
+  const fetchConfigStatus = async () => {
+    try {
+      const data = await api.configStatus();
+      setConfigStatus(data.status);
+    } catch {
+      // Config refresher may not be available in older versions
+    }
+  };
+
+  const fetchAccountsForRefresh = async () => {
+    try {
+      const accs = await api.listAccounts();
+      setAccounts(accs);
+      if (accs.length > 0) {
+        const defaultAcc = accs.find(a => a.is_default);
+        setRefreshUserId(defaultAcc ? defaultAcc.user_id : accs[0].user_id);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => { fetchConfigStatus(); fetchAccountsForRefresh(); }, []);
+
+  const handleConfigRefresh = async () => {
+    setConfigRefreshing(true);
+    try {
+      const result = await api.configRefresh(refreshUserId);
+      if (result.ok) {
+        message.success(`远端配置已刷新（${result.status.model_count} 个模型）`);
+      } else {
+        message.error(`刷新失败：${result.status.error || '未知错误'}`);
+      }
+      setConfigStatus(result.status);
+      // Refresh dynamic model list after config refresh
+      fetchDynamicModels();
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '刷新远端配置失败');
+    } finally {
+      setConfigRefreshing(false);
+    }
+  };
+
+  const fetchDynamicModels = async () => {
+    try {
+      const models = await api.listModels();
+      setDynamicModels(models);
+    } catch {
+      // Use hardcoded fallback
+    }
+  };
+
+  useEffect(() => { fetchDynamicModels(); }, []);
 
   const handleSave = async (values: Settings) => {
     setSaving(true);
@@ -211,12 +321,38 @@ const SettingsPage: React.FC = () => {
             />
           </Form.Item>
         );
-      case 'select':
+      case 'select': {
+        // For default_model, use dynamic models with descriptions
+        let selectOptions: Array<{ label: string; value: string; description?: string }> = field.options || [];
+        if (field.key === 'default_model' && dynamicModels.length > 0) {
+          selectOptions = dynamicModels.map(m => ({
+            label: m.name || m.id,
+            value: m.id,
+            description: m.description,
+          }));
+        }
         return (
           <Form.Item key={field.key} name={field.key} label={label}>
-            <Select placeholder={field.placeholder} options={field.options} allowClear disabled={field.readOnly} />
+            <Select
+              placeholder={field.placeholder}
+              options={selectOptions}
+              optionRender={(option) => {
+                const desc = (option.data as { description?: string })?.description;
+                return desc ? (
+                  <Tooltip title={desc} placement="right" mouseEnterDelay={0.3}>
+                    <div>
+                      <div>{option.label}</div>
+                      <div style={{ fontSize: 11, color: '#999', lineHeight: '14px' }}>{desc}</div>
+                    </div>
+                  </Tooltip>
+                ) : <>{option.label}</>;
+              }}
+              allowClear
+              disabled={field.readOnly}
+            />
           </Form.Item>
         );
+      }
       case 'switch':
         return (
           <Form.Item key={field.key} name={field.key} valuePropName="checked" label={label}>
@@ -285,6 +421,77 @@ const SettingsPage: React.FC = () => {
             </Row>
           </Card>
         ))}
+
+        <Card
+          title={
+            <Space>
+              <CloudOutlined />
+              <Text strong style={{ fontSize: 15 }}>远端配置刷新</Text>
+            </Space>
+          }
+          style={{ marginBottom: 16, borderRadius: 8, border: '1px solid #f0f0f0' }}
+          styles={{ body: { padding: '20px 24px' } }}
+          extra={<SettingOutlined style={{ color: '#00b578' }} />}
+        >
+          <div style={{ marginBottom: 16 }}>
+            <Text type="secondary" style={{ fontSize: 13 }}>
+              从 JoyCode 服务端获取最新的模型列表和插件配置，用于动态更新支持的模型和配置信息。
+              后台每 30 分钟自动刷新一次，也可手动触发。
+            </Text>
+          </div>
+          <Row gutter={[24, 16]} align="middle">
+            {accounts.length > 0 && (
+              <Col xs={24} md={8}>
+                <div style={{ marginBottom: 4 }}>
+                  <Text strong style={{ fontSize: 13 }}>使用凭据</Text>
+                  <Tooltip title="选择使用哪个账号的凭据来获取远端配置，默认使用第一个凭据">
+                    <QuestionCircleOutlined style={{ color: '#bbb', marginLeft: 4 }} />
+                  </Tooltip>
+                </div>
+                <Select
+                  style={{ width: '100%' }}
+                  value={refreshUserId}
+                  onChange={setRefreshUserId}
+                  options={accounts.map(a => ({
+                    label: `${a.remark || a.nickname || a.user_id}${a.is_default ? ' (默认)' : ''}`,
+                    value: a.user_id,
+                  }))}
+                />
+              </Col>
+            )}
+            <Col xs={24} md={accounts.length > 0 ? 8 : 12}>
+              <Button
+                type="primary"
+                icon={<SyncOutlined spin={configRefreshing} />}
+                loading={configRefreshing}
+                onClick={handleConfigRefresh}
+                style={{ borderRadius: 6 }}
+              >
+                立即刷新配置
+              </Button>
+            </Col>
+            <Col xs={24} md={accounts.length > 0 ? 8 : 12}>
+              {configStatus && (
+                <Space direction="vertical" size={2}>
+                  <Space size={4}>
+                    <Tag color={configStatus.success ? 'success' : 'error'}>
+                      {configStatus.success ? '✓ 上次刷新成功' : '✗ 上次刷新失败'}
+                    </Tag>
+                  </Space>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    模型数量: {configStatus.model_count}
+                    {configStatus.last_refresh && ` · 刷新时间: ${new Date(configStatus.last_refresh).toLocaleString()}`}
+                    {configStatus.duration && ` · 耗时: ${configStatus.duration}`}
+                    {configStatus.refreshed_by && ` · 凭据: ${configStatus.refreshed_by}`}
+                  </Text>
+                  {configStatus.error && (
+                    <Text type="danger" style={{ fontSize: 12 }}>错误: {configStatus.error}</Text>
+                  )}
+                </Space>
+              )}
+            </Col>
+          </Row>
+        </Card>
 
         <Card
           title={<Text strong style={{ fontSize: 15 }}>安全设置</Text>}

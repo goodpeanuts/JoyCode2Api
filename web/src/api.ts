@@ -16,6 +16,11 @@ export interface Account {
   credential_checked_at?: string;
   credential_refreshed_at?: string;
   credential_error?: string;
+  login_type?: string;
+  tenant?: string;
+  color_base_url?: string;
+  master_base_url?: string;
+  org_full_name?: string;
 }
 
 export function accountDisplayName(a: { nickname?: string; remark?: string; user_id: string }): string {
@@ -27,6 +32,7 @@ export function accountDisplayName(a: { nickname?: string; remark?: string; user
 export interface ModelInfo {
   id: string;
   name: string;
+  description?: string;
 }
 
 export interface Stats {
@@ -99,6 +105,21 @@ export interface RequestLog {
   input_tokens: number;
   output_tokens: number;
   created_at: string;
+}
+
+export interface ConfigRefreshStatus {
+  last_refresh: string;
+  success: boolean;
+  error?: string;
+  duration?: string;
+  model_count: number;
+  refreshed_by: string;
+}
+
+export interface ConfigStatusResponse {
+  status: ConfigRefreshStatus;
+  plugin_configs: Record<string, unknown>;
+  model_names: string[];
 }
 
 const TOKEN_KEY = 'joycode_jwt';
@@ -224,7 +245,11 @@ export const api = {
   reorderAccounts: (userIds: string[]) =>
     request<{ ok: boolean }>('/api/accounts/reorder', { method: 'PUT', body: JSON.stringify({ user_ids: userIds }) }),
   exportAccounts: () =>
-    request<{ ok: boolean; accounts: Array<{ user_id: string; nickname: string; remark: string; pt_key: string; is_default: boolean; default_model: string; display_order: number }>; count: number }>('/api/accounts-export'),
-  importAccounts: (accounts: Array<{ user_id: string; nickname: string; remark: string; pt_key: string; is_default: boolean; default_model: string; display_order: number }>) =>
+    request<{ ok: boolean; accounts: Array<{ user_id: string; nickname: string; remark: string; pt_key: string; is_default: boolean; default_model: string; display_order: number; login_type?: string; tenant?: string; color_base_url?: string; master_base_url?: string; org_full_name?: string }>; count: number }>('/api/accounts-export'),
+  importAccounts: (accounts: Array<{ user_id: string; nickname: string; remark: string; pt_key: string; is_default: boolean; default_model: string; display_order: number; login_type?: string; tenant?: string; color_base_url?: string; master_base_url?: string; org_full_name?: string }>) =>
     request<{ ok: boolean; added: number; updated: number; total: number }>('/api/accounts-import', { method: 'POST', body: JSON.stringify({ accounts }) }),
+  configRefresh: (userId?: string) =>
+    request<{ ok: boolean; status: ConfigRefreshStatus }>('/api/config/refresh', { method: 'POST', body: JSON.stringify(userId ? { user_id: userId } : {}) }),
+  configStatus: () =>
+    request<ConfigStatusResponse>('/api/config/status'),
 };

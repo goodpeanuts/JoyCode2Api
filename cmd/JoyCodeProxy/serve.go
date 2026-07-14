@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/anthropic"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/auth"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/configref"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/dashboard"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/keepalive"
@@ -88,12 +89,21 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
-		srv := openai.NewServer(client, s)
-		anth := anthropic.NewHandler(client, s)
-
 		// Start credential keepalive: check every 10min, refresh accounts older than 1h
 		keeper := keepalive.NewKeeper(s, 1*time.Hour)
 		keeper.Start(10 * time.Minute)
+
+		// Config refresher: fetch model list and plugin configs from JoyCode API
+		var refresher *configref.ConfigRefresher
+		if s != nil {
+			refresher = configref.NewConfigRefresher(s)
+			refresher.Start(30 * time.Minute)
+		}
+
+		srv := openai.NewServer(client, s)
+		srv.SetRefresher(refresher)
+		anth := anthropic.NewHandler(client, s)
+		anth.SetRefresher(refresher)
 
 		// Per-request client resolution from database accounts
 		if s != nil {
@@ -128,6 +138,14 @@ var serveCmd = &cobra.Command{
 					if creds, err := auth.LoadFromSystem(); err == nil {
 						systemClient = joycode.NewClient(creds.PtKey, creds.UserID)
 						systemClient.SetColorContext(creds.ColorBaseURL, creds.MasterBaseURL, creds.Tenant, creds.LoginType, creds.OrgFullName)
+						systemClient.SetDialect(
+							s.GetSetting("source_type"),
+							s.GetSetting("client_name"),
+							s.GetSetting("client_version"),
+							s.GetSetting("user_agent"),
+							s.GetSetting("login_type"),
+							s.GetSetting("tenant"),
+						)
 					}
 				}
 				apiKey := r.Header.Get("x-api-key")
@@ -147,6 +165,8 @@ var serveCmd = &cobra.Command{
 						if systemClient != nil && systemClient.PtKey != "" && systemClient.PtKey != "placeholder" && systemClient.UserID == account.UserID {
 							cl.SetAnthropicPtKey(systemClient.PtKey)
 						}
+						cl.SetColorContext(account.ColorBaseURL, account.MasterBaseURL, account.Tenant, account.LoginType, account.OrgFullName)
+						cl.SetDialect(s.GetSetting("source_type"), s.GetSetting("client_name"), s.GetSetting("client_version"), s.GetSetting("user_agent"), s.GetSetting("login_type"), s.GetSetting("tenant"))
 						cl.SetTimeout(time.Duration(timeout) * time.Second)
 						return cl
 					}
@@ -155,6 +175,8 @@ var serveCmd = &cobra.Command{
 						if systemClient != nil && systemClient.PtKey != "" && systemClient.PtKey != "placeholder" && systemClient.UserID == account.UserID {
 							cl.SetAnthropicPtKey(systemClient.PtKey)
 						}
+						cl.SetColorContext(account.ColorBaseURL, account.MasterBaseURL, account.Tenant, account.LoginType, account.OrgFullName)
+						cl.SetDialect(s.GetSetting("source_type"), s.GetSetting("client_name"), s.GetSetting("client_version"), s.GetSetting("user_agent"), s.GetSetting("login_type"), s.GetSetting("tenant"))
 						cl.SetTimeout(time.Duration(timeout) * time.Second)
 						return cl
 					}
@@ -164,6 +186,8 @@ var serveCmd = &cobra.Command{
 					if systemClient != nil && systemClient.PtKey != "" && systemClient.PtKey != "placeholder" && systemClient.UserID == account.UserID {
 						cl.SetAnthropicPtKey(systemClient.PtKey)
 					}
+					cl.SetColorContext(account.ColorBaseURL, account.MasterBaseURL, account.Tenant, account.LoginType, account.OrgFullName)
+					cl.SetDialect(s.GetSetting("source_type"), s.GetSetting("client_name"), s.GetSetting("client_version"), s.GetSetting("user_agent"), s.GetSetting("login_type"), s.GetSetting("tenant"))
 					cl.SetTimeout(time.Duration(timeout) * time.Second)
 					cl.SetTransport(sharedTransport)
 					return cl
@@ -195,7 +219,7 @@ var serveCmd = &cobra.Command{
 		// Register dashboard API routes + static file serving
 		if s != nil {
 			subFS, _ := fs.Sub(staticFiles, "static")
-			dash := dashboard.NewHandler(s, subFS, keeper)
+			dash := dashboard.NewHandler(s, subFS, keeper, refresher)
 			dash.Version = Version
 			dash.RegisterRoutes(mux)
 			mux.HandleFunc("/", dash.ServeStatic)
@@ -287,6 +311,9 @@ var serveCmd = &cobra.Command{
 			log.Printf("Server shutdown error: %v", err)
 		}
 		keeper.Stop()
+		if refresher != nil {
+			refresher.Stop()
+		}
 		if s != nil {
 			s.Close()
 		}

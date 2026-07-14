@@ -21,16 +21,17 @@ import SvgClaudeCode from '../components/ClaudeCodeIcon';
 import SvgCodex from '../components/CodexIcon';
 import CommandTooltip from '../components/CommandTooltip';
 
-const BUILTIN_MODELS = [
-  { label: 'JoyAI-Code（推荐）', value: 'JoyAI-Code' },
-  { label: 'Claude-Opus-4.7', value: 'Claude-Opus-4.7' },
-  { label: 'GLM-5.1', value: 'GLM-5.1' },
-  { label: 'GLM-5', value: 'GLM-5' },
-  { label: 'GLM-4.7', value: 'GLM-4.7' },
-  { label: 'Kimi-K2.6', value: 'Kimi-K2.6' },
-  { label: 'Kimi-K2.5', value: 'Kimi-K2.5' },
-  { label: 'MiniMax-M2.7', value: 'MiniMax-M2.7' },
-  { label: 'Doubao-Seed-2.0-pro', value: 'Doubao-Seed-2.0-pro' },
+// Hardcoded fallback when dynamic models are unavailable
+const FALLBACK_MODELS: ModelInfo[] = [
+  { id: 'JoyAI-Code', name: 'JoyAI-Code（推荐）', description: '主力代码模型' },
+  { id: 'Claude-Opus-4.7', name: 'Claude-Opus-4.7', description: 'Anthropic Claude Opus' },
+  { id: 'GLM-5.1', name: 'GLM-5.1', description: '智谱 GLM 5.1' },
+  { id: 'GLM-5', name: 'GLM-5', description: '智谱 GLM 5' },
+  { id: 'GLM-4.7', name: 'GLM-4.7', description: '智谱 GLM 4.7' },
+  { id: 'Kimi-K2.6', name: 'Kimi-K2.6', description: 'Moonshot Kimi K2.6' },
+  { id: 'Kimi-K2.5', name: 'Kimi-K2.5', description: 'Moonshot Kimi K2.5' },
+  { id: 'MiniMax-M2.7', name: 'MiniMax-M2.7', description: 'MiniMax M2.7' },
+  { id: 'Doubao-Seed-2.0-pro', name: 'Doubao-Seed-2.0-pro', description: '豆包 Seed 2.0 Pro' },
 ];
 
 const isClaudeModel = (model?: string) => model === 'Claude-Opus-4.7';
@@ -191,12 +192,13 @@ const AccountDetail: React.FC = () => {
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
   if (!account) return <div style={{ textAlign: 'center', padding: 100 }}>账号不存在</div>;
 
-  const allModelOptions = [
-    ...BUILTIN_MODELS,
-    ...models
-      .filter((m) => !BUILTIN_MODELS.some((b) => b.value === m.id))
-      .map((m) => ({ label: m.name || m.id, value: m.id })),
-  ];
+  // Build model options: use dynamic models if available, otherwise fallback
+  const allModelOptions = models.length > 0 ? models : FALLBACK_MODELS;
+  const modelSelectOptions = allModelOptions.map((m) => ({
+    label: m.name || m.id,
+    value: m.id,
+    description: m.description,
+  }));
 
   const filteredLogs = logFilter === 'all'
     ? logs
@@ -336,7 +338,18 @@ const AccountDetail: React.FC = () => {
             style={{ width: 220 }}
             value={account.default_model || undefined}
             placeholder="默认模型"
-            options={allModelOptions}
+            options={modelSelectOptions}
+            optionRender={(option) => {
+              const desc = (option.data as { description?: string })?.description;
+              return desc ? (
+                <Tooltip title={desc} placement="right" mouseEnterDelay={0.3}>
+                  <div>
+                    <div>{option.label}</div>
+                    <div style={{ fontSize: 11, color: '#999', lineHeight: '14px' }}>{desc}</div>
+                  </div>
+                </Tooltip>
+              ) : <>{option.label}</>;
+            }}
             allowClear
             loading={modelLoading}
             onChange={handleModelChange}

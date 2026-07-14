@@ -117,9 +117,9 @@ func TestPrepareBody_DefaultFields(t *testing.T) {
 	body := c.prepareBody(map[string]interface{}{})
 
 	defaults := map[string]string{
-		"tenant":        "JOYCODE",
+		"tenant":        DefaultTenant,
 		"userId":        "user42",
-		"client":        "JoyCode",
+		"client":        DefaultClient,
 		"clientVersion": ClientVersion,
 		"language":      "UNKNOWN",
 	}

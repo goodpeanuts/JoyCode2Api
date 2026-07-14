@@ -41,7 +41,7 @@ func TestCredentials_NilVsNonNil(t *testing.T) {
 
 func TestStateData_JSONParsing(t *testing.T) {
 	raw := `{"joyCoderUser":{"ptKey":"test-pt-key-123","userId":"user-456"}}`
-	var data stateData
+	var data ideStateData
 	if err := json.Unmarshal([]byte(raw), &data); err != nil {
 		t.Fatalf("failed to parse valid JSON: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestStateData_JSONParsing(t *testing.T) {
 
 func TestStateData_EmptyPtKey(t *testing.T) {
 	raw := `{"joyCoderUser":{"ptKey":"","userId":"user-789"}}`
-	var data stateData
+	var data ideStateData
 	if err := json.Unmarshal([]byte(raw), &data); err != nil {
 		t.Fatalf("failed to parse JSON: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestStateData_EmptyPtKey(t *testing.T) {
 
 func TestStateData_EmptyUserID(t *testing.T) {
 	raw := `{"joyCoderUser":{"ptKey":"some-key","userId":""}}`
-	var data stateData
+	var data ideStateData
 	if err := json.Unmarshal([]byte(raw), &data); err != nil {
 		t.Fatalf("failed to parse JSON: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestStateData_EmptyUserID(t *testing.T) {
 
 func TestStateData_MissingJoyCoderUser(t *testing.T) {
 	raw := `{"otherField":"some-value"}`
-	var data stateData
+	var data ideStateData
 	if err := json.Unmarshal([]byte(raw), &data); err != nil {
 		t.Fatalf("failed to parse JSON: %v", err)
 	}
@@ -228,8 +228,81 @@ func TestLoadFromSystem_DatabaseInvalidJSON(t *testing.T) {
 	t.Logf("got expected error: %v", err)
 }
 
-func createTestDB(t *testing.T, baseDir string, jsonValue string) {
-	t.Helper()
+func TestParsePlugin_JdhLoginInfo(t *testing.T) {
+	raw := `{"jdhLoginInfo":{"ptKey":"BJ.plugin-key","userId":"jd_user","loginType":"ERP","tenant":"JD"}}`
+	cred, err := parsePlugin([]byte(raw))
+	if err != nil {
+		t.Fatalf("parsePlugin failed: %v", err)
+	}
+	if cred.PtKey != "BJ.plugin-key" {
+		t.Errorf("PtKey = %q, want %q", cred.PtKey, "BJ.plugin-key")
+	}
+	if cred.UserID != "jd_user" {
+		t.Errorf("UserID = %q, want %q", cred.UserID, "jd_user")
+	}
+	if cred.LoginType != "ERP" {
+		t.Errorf("LoginType = %q, want %q", cred.LoginType, "ERP")
+	}
+}
+
+func TestLoadFromSystem_VSCodePlugin(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("skipping darwin-specific test on non-darwin")
+	}
+	tmpDir := t.TempDir()
+
+	createVSCodeTestDB(t, tmpDir, `{"jdhLoginInfo":{"ptKey":"plugin-pt-key","userId":"plugin-user","loginType":"ERP","tenant":"JD"}}`)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	creds, err := LoadFromSystem()
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if creds.PtKey != "plugin-pt-key" {
+		t.Errorf("PtKey = %q, want %q", creds.PtKey, "plugin-pt-key")
+	}
+	if creds.UserID != "plugin-user" {
+		t.Errorf("UserID = %q, want %q", creds.UserID, "plugin-user")
+	}
+}
+
+func TestLoadFromSystem_VSCodeStateDBEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "state.vscdb")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if _, err := db.Exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)"); err != nil {
+		db.Close()
+		t.Fatalf("create table: %v", err)
+	}
+	_, err = db.Exec("INSERT INTO ItemTable (key, value) VALUES ('JoyCoder.joycoder-fe', ?)",
+		`{"jdhLoginInfo":{"ptKey":"env-pt-key","userId":"env-user"}}`)
+	db.Close()
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	os.Setenv("JOYCODE_VSCODE_STATE_DB", dbPath)
+	defer os.Unsetenv("JOYCODE_VSCODE_STATE_DB")
+
+	creds, err := LoadFromSystem()
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if creds.PtKey != "env-pt-key" {
+		t.Errorf("PtKey = %q, want %q", creds.PtKey, "env-pt-key")
+	}
+	if creds.UserID != "env-user" {
+		t.Errorf("UserID = %q, want %q", creds.UserID, "env-user")
+	}
+}
+
+func createTestDB(t *testing.T, baseDir string, jsonValue string) {	t.Helper()
 
 	dbDir := filepath.Join(baseDir, "Library", "Application Support",
 		"JoyCode", "User", "globalStorage")
@@ -250,6 +323,40 @@ func createTestDB(t *testing.T, baseDir string, jsonValue string) {
 	}
 
 	_, err = db.Exec("INSERT INTO ItemTable (key, value) VALUES ('JoyCoder.IDE', ?)", jsonValue)
+	if err != nil {
+		db.Close()
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("failed to close database after setup: %v", err)
+	}
+}
+
+// createVSCodeTestDB 在 baseDir 下构造 VS Code 插件的 globalStorage/state.vscdb，
+// 键为 JoyCoder.joycoder-fe，载荷在 jdhLoginInfo 下。
+func createVSCodeTestDB(t *testing.T, baseDir string, jsonValue string) {
+	t.Helper()
+
+	dbDir := filepath.Join(baseDir, "Library", "Application Support",
+		"Code", "User", "globalStorage")
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		t.Fatalf("failed to create db directory: %v", err)
+	}
+
+	dbPath := filepath.Join(dbDir, "state.vscdb")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("failed to create sqlite database: %v", err)
+	}
+
+	_, err = db.Exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)")
+	if err != nil {
+		db.Close()
+		t.Fatalf("failed to create ItemTable: %v", err)
+	}
+
+	_, err = db.Exec("INSERT INTO ItemTable (key, value) VALUES ('JoyCoder.joycoder-fe', ?)", jsonValue)
 	if err != nil {
 		db.Close()
 		t.Fatalf("failed to insert test data: %v", err)

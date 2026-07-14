@@ -111,7 +111,7 @@ func TestDecryptTooShort(t *testing.T) {
 func TestAddAndListAccounts(t *testing.T) {
 	s := openTestStore(t)
 
-	err := s.AddAccount("key1", "pt1", "user1", true, "JoyAI-Code")
+	err := s.AddAccount("key1", "pt1", "user1", true, "JoyAI-Code", nil)
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -152,8 +152,8 @@ func TestListAccountsEmpty(t *testing.T) {
 func TestAddMultipleAccounts(t *testing.T) {
 	s := openTestStore(t)
 
-	s.AddAccount("key1", "pt1", "user1", true, "")
-	s.AddAccount("key2", "pt2", "user2", false, "GLM-5.1")
+	s.AddAccount("key1", "pt1", "user1", true, "", nil)
+	s.AddAccount("key2", "pt2", "user2", false, "GLM-5.1", nil)
 
 	accounts, _ := s.ListAccounts()
 	if len(accounts) != 2 {
@@ -175,8 +175,8 @@ func TestAddMultipleAccounts(t *testing.T) {
 func TestAddAccountOverwrites(t *testing.T) {
 	s := openTestStore(t)
 
-	s.AddAccount("key1", "pt1", "user1", true, "")
-	s.AddAccount("key1", "pt1-updated", "user1-new", false, "GLM-5.1")
+	s.AddAccount("key1", "pt1", "user1", true, "", nil)
+	s.AddAccount("key1", "pt1-updated", "user1-new", false, "GLM-5.1", nil)
 
 	accounts, _ := s.ListAccounts()
 	if len(accounts) != 1 {
@@ -192,7 +192,7 @@ func TestAddAccountOverwrites(t *testing.T) {
 func TestGetAccount(t *testing.T) {
 	s := openTestStore(t)
 
-	s.AddAccount("key1", "secret-pt-key", "user1", true, "JoyAI-Code")
+	s.AddAccount("key1", "secret-pt-key", "user1", true, "JoyAI-Code", nil)
 
 	a, err := s.GetAccount("key1")
 	if err != nil {
@@ -224,7 +224,7 @@ func TestGetAccountNotFound(t *testing.T) {
 func TestRemoveAccount(t *testing.T) {
 	s := openTestStore(t)
 
-	s.AddAccount("key1", "pt1", "user1", true, "")
+	s.AddAccount("key1", "pt1", "user1", true, "", nil)
 	s.RemoveAccount("key1")
 
 	accounts, _ := s.ListAccounts()
@@ -245,8 +245,8 @@ func TestRemoveNonexistent(t *testing.T) {
 func TestSetDefault(t *testing.T) {
 	s := openTestStore(t)
 
-	s.AddAccount("key1", "pt1", "user1", true, "")
-	s.AddAccount("key2", "pt2", "user2", false, "")
+	s.AddAccount("key1", "pt1", "user1", true, "", nil)
+	s.AddAccount("key2", "pt2", "user2", false, "", nil)
 
 	s.SetDefault("key2")
 
@@ -264,7 +264,7 @@ func TestSetDefault(t *testing.T) {
 func TestUpdateAccountModel(t *testing.T) {
 	s := openTestStore(t)
 
-	s.AddAccount("key1", "pt1", "user1", true, "JoyAI-Code")
+	s.AddAccount("key1", "pt1", "user1", true, "JoyAI-Code", nil)
 	s.UpdateAccountModel("key1", "GLM-5.1")
 
 	a, _ := s.GetAccount("key1")
@@ -276,8 +276,8 @@ func TestUpdateAccountModel(t *testing.T) {
 func TestGetDefaultAccount(t *testing.T) {
 	s := openTestStore(t)
 
-	s.AddAccount("key1", "pt1", "user1", false, "")
-	s.AddAccount("key2", "pt2", "user2", true, "JoyAI-Code")
+	s.AddAccount("key1", "pt1", "user1", false, "", nil)
+	s.AddAccount("key2", "pt2", "user2", true, "JoyAI-Code", nil)
 
 	a, err := s.GetDefaultAccount()
 	if err != nil {

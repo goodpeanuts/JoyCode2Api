@@ -25,7 +25,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if s.store != nil {
 		systemDefault = s.store.GetSetting("default_model")
 	}
-	model := ResolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault)
+	model := ResolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault, s.knownModels())
 		store.SetModel(r, model)
 		jcBody := TranslateRequest(&req)
 	client := s.getClient(r)

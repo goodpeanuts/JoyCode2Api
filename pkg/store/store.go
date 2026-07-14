@@ -24,6 +24,17 @@ const (
 	encKeyFile    = ".enc_key"
 )
 
+// AccountCreds holds per-account credential fields that are persisted alongside pt_key.
+// These are injected into the joycode.Client at request time via SetColorContext.
+// When nil or empty, the client falls back to DB global settings then hardcoded defaults.
+type AccountCreds struct {
+	LoginType     string `json:"login_type"`
+	Tenant        string `json:"tenant"`
+	ColorBaseURL  string `json:"color_base_url"`
+	MasterBaseURL string `json:"master_base_url"`
+	OrgFullName   string `json:"org_full_name"`
+}
+
 type Account struct {
 	UserID       string `json:"user_id"`
 	Nickname     string `json:"nickname"`
@@ -33,6 +44,11 @@ type Account struct {
 	IsDefault    bool   `json:"is_default"`
 	DefaultModel string `json:"default_model"`
 	CreatedAt    string `json:"created_at,omitempty"`
+	LoginType    string `json:"login_type"`
+	Tenant       string `json:"tenant"`
+	ColorBaseURL string `json:"color_base_url"`
+	MasterBaseURL string `json:"master_base_url"`
+	OrgFullName  string `json:"org_full_name"`
 }
 
 func (a *Account) DisplayName() string {
@@ -63,6 +79,11 @@ type AccountInfo struct {
 	CredentialCheckedAt string `json:"credential_checked_at,omitempty"`
 	CredentialRefreshAt string `json:"credential_refreshed_at,omitempty"`
 	CredentialError     string `json:"credential_error,omitempty"`
+	LoginType     string `json:"login_type"`
+	Tenant        string `json:"tenant"`
+	ColorBaseURL  string `json:"color_base_url"`
+	MasterBaseURL string `json:"master_base_url"`
+	OrgFullName   string `json:"org_full_name"`
 }
 
 func (a *AccountInfo) DisplayName() string {
@@ -270,6 +291,13 @@ func (s *Store) migrate() error {
 		return err
 	}
 
+	// Create remote_configs table (idempotent)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS remote_configs (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL,
+		updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+	)`)
+
 	// Migration: add error_message column to request_logs
 	s.db.Exec("ALTER TABLE request_logs ADD COLUMN error_message TEXT DEFAULT ''")
 
@@ -279,6 +307,13 @@ func (s *Store) migrate() error {
 
 	// Migration: add display_order column to accounts
 	s.db.Exec("ALTER TABLE accounts ADD COLUMN display_order INTEGER DEFAULT 0")
+
+	// Migration: add per-account credential fields
+	s.db.Exec("ALTER TABLE accounts ADD COLUMN login_type TEXT DEFAULT ''")
+	s.db.Exec("ALTER TABLE accounts ADD COLUMN tenant TEXT DEFAULT ''")
+	s.db.Exec("ALTER TABLE accounts ADD COLUMN color_base_url TEXT DEFAULT ''")
+	s.db.Exec("ALTER TABLE accounts ADD COLUMN master_base_url TEXT DEFAULT ''")
+	s.db.Exec("ALTER TABLE accounts ADD COLUMN org_full_name TEXT DEFAULT ''")
 
 	// Migration: migrate old schema (api_key as PK) to new schema (user_id as PK)
 	s.migrateUserIDAsPK()
@@ -324,6 +359,11 @@ func (s *Store) migrateUserIDAsPK() {
 			credential_refreshed_at TEXT DEFAULT '',
 			credential_valid INTEGER DEFAULT -1,
 			display_order INTEGER DEFAULT 0
+				login_type TEXT DEFAULT '',
+				tenant TEXT DEFAULT '',
+				color_base_url TEXT DEFAULT '',
+				master_base_url TEXT DEFAULT '',
+				org_full_name TEXT DEFAULT ''
 		)`)
 	if err != nil {
 		slog.Error("store: migrateUserIDAsPK create accounts_new failed", "error", err)
@@ -496,12 +536,22 @@ func (s *Store) decrypt(ciphertext string) (string, error) {
 
 const MaxAccounts = 10
 
-func (s *Store) AddAccount(userID, ptKey, nickname string, isDefault bool, defaultModel string) error {
+func (s *Store) AddAccount(userID, ptKey, nickname string, isDefault bool, defaultModel string, creds *AccountCreds) error {
 	if userID == "" {
 		return fmt.Errorf("user_id cannot be empty")
 	}
 	if ptKey == "" {
 		return fmt.Errorf("pt_key cannot be empty")
+	}
+
+	// Extract credential fields; nil creds means empty strings (backward compat)
+	var cLoginType, cTenant, cColorBaseURL, cMasterBaseURL, cOrgFullName string
+	if creds != nil {
+		cLoginType = creds.LoginType
+		cTenant = creds.Tenant
+		cColorBaseURL = creds.ColorBaseURL
+		cMasterBaseURL = creds.MasterBaseURL
+		cOrgFullName = creds.OrgFullName
 	}
 
 	s.mu.Lock()
@@ -517,8 +567,8 @@ func (s *Store) AddAccount(userID, ptKey, nickname string, isDefault bool, defau
 			return fmt.Errorf("encrypt pt_key: %w", err)
 		}
 		_, err = s.db.Exec(
-			"UPDATE accounts SET pt_key = ?, nickname = CASE WHEN nickname = '' OR nickname IS NULL THEN ? ELSE nickname END, updated_at = datetime('now', 'localtime') WHERE user_id = ?",
-			encPtKey, nickname, userID,
+			"UPDATE accounts SET pt_key = ?, nickname = CASE WHEN nickname = '' OR nickname IS NULL THEN ? ELSE nickname END, login_type = ?, tenant = ?, color_base_url = ?, master_base_url = ?, org_full_name = ?, updated_at = datetime('now', 'localtime') WHERE user_id = ?",
+			encPtKey, nickname, cLoginType, cTenant, cColorBaseURL, cMasterBaseURL, cOrgFullName, userID,
 		)
 		if err != nil {
 			slog.Error("store: update account failed", "user_id", userID, "error", err)
@@ -548,8 +598,8 @@ func (s *Store) AddAccount(userID, ptKey, nickname string, isDefault bool, defau
 						return fmt.Errorf("encrypt pt_key: %w", encErr)
 					}
 					_, err = s.db.Exec(
-						"UPDATE accounts SET user_id = ?, pt_key = ?, nickname = CASE WHEN nickname = '' OR nickname IS NULL THEN ? ELSE nickname END, updated_at = datetime('now', 'localtime') WHERE user_id = ?",
-						userID, encPtKey, nickname, existingUserID,
+						"UPDATE accounts SET user_id = ?, pt_key = ?, nickname = CASE WHEN nickname = '' OR nickname IS NULL THEN ? ELSE nickname END, login_type = ?, tenant = ?, color_base_url = ?, master_base_url = ?, org_full_name = ?, updated_at = datetime('now', 'localtime') WHERE user_id = ?",
+						userID, encPtKey, nickname, cLoginType, cTenant, cColorBaseURL, cMasterBaseURL, cOrgFullName, existingUserID,
 					)
 					if err != nil {
 						slog.Error("store: update account (pt_key dedup) failed", "old_user_id", existingUserID, "new_user_id", userID, "error", err)
@@ -591,8 +641,8 @@ func (s *Store) AddAccount(userID, ptKey, nickname string, isDefault bool, defau
 
 	token := generateToken()
 	_, err = s.db.Exec(
-		"INSERT INTO accounts (user_id, nickname, api_token, pt_key, is_default, default_model, display_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		userID, nickname, token, encPtKey, def, defaultModel, maxOrder+1,
+		"INSERT INTO accounts (user_id, nickname, api_token, pt_key, is_default, default_model, display_order, login_type, tenant, color_base_url, master_base_url, org_full_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		userID, nickname, token, encPtKey, def, defaultModel, maxOrder+1, cLoginType, cTenant, cColorBaseURL, cMasterBaseURL, cOrgFullName,
 	)
 	if err != nil {
 		slog.Error("store: add account failed", "user_id", userID, "error", err)
@@ -602,7 +652,7 @@ func (s *Store) AddAccount(userID, ptKey, nickname string, isDefault bool, defau
 }
 
 func (s *Store) ListAccounts() ([]AccountInfo, error) {
-	rows, err := s.db.Query("SELECT user_id, nickname, remark, api_token, is_default, default_model, created_at, credential_valid, credential_refreshed_at, COALESCE(display_order, 0) FROM accounts ORDER BY display_order, created_at")
+	rows, err := s.db.Query("SELECT user_id, nickname, remark, api_token, is_default, default_model, created_at, credential_valid, credential_refreshed_at, COALESCE(display_order, 0), COALESCE(login_type,''), COALESCE(tenant,''), COALESCE(color_base_url,''), COALESCE(master_base_url,''), COALESCE(org_full_name,'') FROM accounts ORDER BY display_order, created_at")
 	if err != nil {
 		slog.Error("store: list accounts query failed", "error", err)
 		return nil, err
@@ -613,7 +663,7 @@ func (s *Store) ListAccounts() ([]AccountInfo, error) {
 	for rows.Next() {
 		var a AccountInfo
 		var isDef int
-		if err := rows.Scan(&a.UserID, &a.Nickname, &a.Remark, &a.APIToken, &isDef, &a.DefaultModel, &a.CreatedAt, &a.CredentialValid, &a.CredentialRefreshAt, &a.DisplayOrder); err != nil {
+		if err := rows.Scan(&a.UserID, &a.Nickname, &a.Remark, &a.APIToken, &isDef, &a.DefaultModel, &a.CreatedAt, &a.CredentialValid, &a.CredentialRefreshAt, &a.DisplayOrder, &a.LoginType, &a.Tenant, &a.ColorBaseURL, &a.MasterBaseURL, &a.OrgFullName); err != nil {
 			slog.Error("store: list accounts scan failed", "error", err)
 			return nil, err
 		}
@@ -688,9 +738,9 @@ func (s *Store) GetAccount(userID string) (*Account, error) {
 	var encPtKey string
 	var isDef int
 	err := s.db.QueryRow(
-		"SELECT user_id, nickname, remark, api_token, pt_key, is_default, default_model, created_at FROM accounts WHERE user_id = ?",
+		"SELECT user_id, nickname, remark, api_token, pt_key, is_default, default_model, created_at, COALESCE(login_type,''), COALESCE(tenant,''), COALESCE(color_base_url,''), COALESCE(master_base_url,''), COALESCE(org_full_name,'') FROM accounts WHERE user_id = ?",
 		userID,
-	).Scan(&a.UserID, &a.Nickname, &a.Remark, &a.APIToken, &encPtKey, &isDef, &a.DefaultModel, &a.CreatedAt)
+	).Scan(&a.UserID, &a.Nickname, &a.Remark, &a.APIToken, &encPtKey, &isDef, &a.DefaultModel, &a.CreatedAt, &a.LoginType, &a.Tenant, &a.ColorBaseURL, &a.MasterBaseURL, &a.OrgFullName)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -714,9 +764,9 @@ func (s *Store) GetAccountByToken(token string) (*Account, error) {
 	var encPtKey string
 	var isDef int
 	err := s.db.QueryRow(
-		"SELECT user_id, nickname, remark, api_token, pt_key, is_default, default_model, created_at FROM accounts WHERE api_token = ?",
+		"SELECT user_id, nickname, remark, api_token, pt_key, is_default, default_model, created_at, COALESCE(login_type,''), COALESCE(tenant,''), COALESCE(color_base_url,''), COALESCE(master_base_url,''), COALESCE(org_full_name,'') FROM accounts WHERE api_token = ?",
 		token,
-	).Scan(&a.UserID, &a.Nickname, &a.Remark, &a.APIToken, &encPtKey, &isDef, &a.DefaultModel, &a.CreatedAt)
+	).Scan(&a.UserID, &a.Nickname, &a.Remark, &a.APIToken, &encPtKey, &isDef, &a.DefaultModel, &a.CreatedAt, &a.LoginType, &a.Tenant, &a.ColorBaseURL, &a.MasterBaseURL, &a.OrgFullName)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -749,8 +799,8 @@ func (s *Store) GetDefaultAccount() (*Account, error) {
 	var a Account
 	var encPtKey string
 	err := s.db.QueryRow(
-		"SELECT user_id, nickname, remark, api_token, pt_key, is_default, default_model, created_at FROM accounts WHERE is_default = 1 LIMIT 1",
-	).Scan(&a.UserID, &a.Nickname, &a.Remark, &a.APIToken, &encPtKey, new(int), &a.DefaultModel, &a.CreatedAt)
+		"SELECT user_id, nickname, remark, api_token, pt_key, is_default, default_model, created_at, COALESCE(login_type,''), COALESCE(tenant,''), COALESCE(color_base_url,''), COALESCE(master_base_url,''), COALESCE(org_full_name,'') FROM accounts WHERE is_default = 1 LIMIT 1",
+	).Scan(&a.UserID, &a.Nickname, &a.Remark, &a.APIToken, &encPtKey, new(int), &a.DefaultModel, &a.CreatedAt, &a.LoginType, &a.Tenant, &a.ColorBaseURL, &a.MasterBaseURL, &a.OrgFullName)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -965,6 +1015,27 @@ func (s *Store) UpdateAccountModel(userID, model string) error {
 	return err
 }
 
+// UpdateAccountCreds updates the per-account credential fields for a given user.
+// Non-empty fields in creds overwrite the stored values; empty fields are left unchanged.
+func (s *Store) UpdateAccountCreds(userID string, creds *AccountCreds) error {
+	if creds == nil {
+		return nil
+	}
+	_, err := s.db.Exec(
+		"UPDATE accounts SET login_type = CASE WHEN ? != '' THEN ? ELSE login_type END, tenant = CASE WHEN ? != '' THEN ? ELSE tenant END, color_base_url = CASE WHEN ? != '' THEN ? ELSE color_base_url END, master_base_url = CASE WHEN ? != '' THEN ? ELSE master_base_url END, org_full_name = CASE WHEN ? != '' THEN ? ELSE org_full_name END, updated_at = datetime('now', 'localtime') WHERE user_id = ?",
+		creds.LoginType, creds.LoginType,
+		creds.Tenant, creds.Tenant,
+		creds.ColorBaseURL, creds.ColorBaseURL,
+		creds.MasterBaseURL, creds.MasterBaseURL,
+		creds.OrgFullName, creds.OrgFullName,
+		userID,
+	)
+	if err != nil {
+		slog.Error("store: update account creds failed", "user_id", userID, "error", err)
+	}
+	return err
+}
+
 // --- Settings ---
 
 func (s *Store) GetSettings() (map[string]string, error) {
@@ -1034,6 +1105,31 @@ func (s *Store) SetSettings(settings map[string]string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// --- Remote Configs ---
+
+// GetRemoteConfig retrieves a stored remote config JSON blob by key.
+// Returns empty string if not found.
+func (s *Store) GetRemoteConfig(key string) string {
+	var val string
+	err := s.db.QueryRow("SELECT value FROM remote_configs WHERE key = ?", key).Scan(&val)
+	if err != nil {
+		return ""
+	}
+	return val
+}
+
+// SetRemoteConfig stores a remote config JSON blob by key.
+func (s *Store) SetRemoteConfig(key, value string) error {
+	_, err := s.db.Exec(
+		"INSERT OR REPLACE INTO remote_configs (key, value, updated_at) VALUES (?, ?, datetime('now', 'localtime'))",
+		key, value,
+	)
+	if err != nil {
+		slog.Error("store: set remote config failed", "key", key, "error", err)
+	}
+	return err
 }
 
 // --- Request Logging ---
@@ -1383,6 +1479,11 @@ type ExportAccountItem struct {
 	IsDefault    bool   `json:"is_default"`
 	DefaultModel string `json:"default_model"`
 	DisplayOrder int    `json:"display_order"`
+	LoginType     string `json:"login_type"`
+	Tenant        string `json:"tenant"`
+	ColorBaseURL  string `json:"color_base_url"`
+	MasterBaseURL string `json:"master_base_url"`
+	OrgFullName   string `json:"org_full_name"`
 }
 
 // ExportAccounts returns all accounts with decrypted pt_keys for export.
@@ -1391,7 +1492,7 @@ func (s *Store) ExportAccounts() ([]ExportAccountItem, error) {
 	defer s.mu.Unlock()
 
 	rows, err := s.db.Query(
-		"SELECT user_id, nickname, remark, pt_key, is_default, default_model, COALESCE(display_order, 0) FROM accounts ORDER BY display_order, created_at",
+		"SELECT user_id, nickname, remark, pt_key, is_default, default_model, COALESCE(display_order, 0), COALESCE(login_type,''), COALESCE(tenant,''), COALESCE(color_base_url,''), COALESCE(master_base_url,''), COALESCE(org_full_name,'') FROM accounts ORDER BY display_order, created_at",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query accounts for export: %w", err)
@@ -1403,7 +1504,7 @@ func (s *Store) ExportAccounts() ([]ExportAccountItem, error) {
 		var item ExportAccountItem
 		var encPtKey string
 		var isDef int
-		if err := rows.Scan(&item.UserID, &item.Nickname, &item.Remark, &encPtKey, &isDef, &item.DefaultModel, &item.DisplayOrder); err != nil {
+		if err := rows.Scan(&item.UserID, &item.Nickname, &item.Remark, &encPtKey, &isDef, &item.DefaultModel, &item.DisplayOrder, &item.LoginType, &item.Tenant, &item.ColorBaseURL, &item.MasterBaseURL, &item.OrgFullName); err != nil {
 			return nil, fmt.Errorf("scan account for export: %w", err)
 		}
 		ptKey, err := s.decrypt(encPtKey)
@@ -1434,7 +1535,14 @@ func (s *Store) ImportAccounts(items []ExportAccountItem) (added int, updated in
 		if e != nil {
 			return added, updated, fmt.Errorf("check existing account %s: %w", item.UserID, e)
 		}
-		if err := s.AddAccount(item.UserID, item.PtKey, item.Nickname, item.IsDefault, item.DefaultModel); err != nil {
+		creds := &AccountCreds{
+			LoginType:     item.LoginType,
+			Tenant:        item.Tenant,
+			ColorBaseURL:  item.ColorBaseURL,
+			MasterBaseURL: item.MasterBaseURL,
+			OrgFullName:   item.OrgFullName,
+		}
+		if err := s.AddAccount(item.UserID, item.PtKey, item.Nickname, item.IsDefault, item.DefaultModel, creds); err != nil {
 			return added, updated, fmt.Errorf("import account %s: %w", item.UserID, err)
 		}
 		if existing > 0 {
