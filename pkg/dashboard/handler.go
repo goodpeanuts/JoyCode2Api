@@ -1091,6 +1091,8 @@ func (h *Handler) handleAccountAction(w http.ResponseWriter, r *http.Request) {
 		h.getAccountStats(w, r, apiKey)
 	case action == "logs" && r.Method == http.MethodGet:
 		h.getAccountLogs(w, r, apiKey)
+	case action == "log-filters" && r.Method == http.MethodGet:
+		h.getAccountLogFilters(w, r, apiKey)
 	case action == "renew-token" && r.Method == http.MethodPost:
 		h.renewToken(w, r, apiKey)
 	case action == "remark" && r.Method == http.MethodPut:
@@ -1233,7 +1235,42 @@ func (h *Handler) getAccountLogs(w http.ResponseWriter, r *http.Request, apiKey 
 			limit = 200
 		}
 	}
-	logs, err := h.store.GetAccountLogs(apiKey, limit)
+	var beforeID int64 = 0
+	if b := r.URL.Query().Get("before_id"); b != "" {
+		if n, err := fmt.Sscanf(b, "%d", &beforeID); err != nil || n != 1 || beforeID < 0 {
+			beforeID = 0
+		}
+	}
+	filter := r.URL.Query().Get("filter")
+	switch filter {
+	case "stream", "errors":
+		// ok
+	default:
+		filter = "all"
+	}
+	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
+	model := strings.TrimSpace(r.URL.Query().Get("model"))
+
+	// "date" is a calendar day in the configured display timezone; resolve it
+	// to a half-open UTC window so the comparison works against the UTC
+	// created_at column.
+	var fromUTC, toUTC string
+	if date := strings.TrimSpace(r.URL.Query().Get("date")); date != "" {
+		tz := h.store.GetSetting("timezone")
+		if f, t, ok := dayBoundsUTC(date, tz); ok {
+			fromUTC, toUTC = f, t
+		}
+	}
+
+	logs, err := h.store.GetAccountLogsQuery(apiKey, store.LogQuery{
+		BeforeID: beforeID,
+		Category: filter,
+		Endpoint: endpoint,
+		Model:    model,
+		FromUTC:  fromUTC,
+		ToUTC:    toUTC,
+		Limit:    limit,
+	})
 	if err != nil {
 		slog.Error("get account logs", "api_key", apiKey, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -1242,7 +1279,51 @@ func (h *Handler) getAccountLogs(w http.ResponseWriter, r *http.Request, apiKey 
 	if logs == nil {
 		logs = []store.RequestLog{}
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"logs": logs, "total": len(logs)})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"logs":     logs,
+		"total":    len(logs),
+		"has_more": len(logs) == limit,
+	})
+}
+
+// getAccountLogFilters returns the distinct endpoints and real upstream model
+// names present in a user's logs, for populating the log filter dropdowns.
+func (h *Handler) getAccountLogFilters(w http.ResponseWriter, r *http.Request, apiKey string) {
+	endpoints, models, err := h.store.GetAccountLogFilters(apiKey)
+	if err != nil {
+		slog.Error("get account log filters", "api_key", apiKey, "error", err)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if endpoints == nil {
+		endpoints = []string{}
+	}
+	if models == nil {
+		models = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"endpoints": endpoints,
+		"models":    models,
+	})
+}
+
+// dayBoundsUTC converts a "YYYY-MM-DD" calendar day in the given IANA timezone
+// into the half-open UTC window [from, to) covering that local day. An invalid
+// date or unresolvable timezone (after falling back to UTC) returns ok=false.
+func dayBoundsUTC(date, tz string) (from, to string, ok bool) {
+	day, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return "", "", false
+	}
+	loc, err := time.LoadLocation(strings.TrimSpace(tz))
+	if err != nil || loc == nil {
+		loc = time.UTC
+	}
+	y, m, d := day.Date()
+	start := time.Date(y, m, d, 0, 0, 0, 0, loc)
+	end := start.AddDate(0, 0, 1)
+	const fmtUTC = "2006-01-02 15:04:05"
+	return start.UTC().Format(fmtUTC), end.UTC().Format(fmtUTC), true
 }
 
 func (h *Handler) renewToken(w http.ResponseWriter, r *http.Request, apiKey string) {

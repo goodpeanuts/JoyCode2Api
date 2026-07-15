@@ -742,3 +742,287 @@ func TestMigrateFutureTimestampsToUTC(t *testing.T) {
 		t.Errorf("past row should be untouched, got %q", past)
 	}
 }
+
+// seedLogs inserts n request logs for userID; every 3rd is an error (500) and
+// every 2nd is a stream row, giving a mix for filter/pagination assertions.
+func seedLogs(t *testing.T, s *Store, userID string, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		status := 200
+		if i%3 == 0 {
+			status = 500
+		}
+		stream := i%2 == 0
+		if err := s.LogRequest(userID, "m", "/e", stream, status, 10, "", 0, 0); err != nil {
+			t.Fatalf("seed log %d: %v", i, err)
+		}
+	}
+}
+
+func TestGetAccountLogsPaged(t *testing.T) {
+	s := openTestStore(t)
+	seedLogs(t, s, "u1", 25)
+	seedLogs(t, s, "other", 5) // must never leak into u1's results
+
+	// Page 1 (newest first), then cursor to page 2 via the last id.
+	p1, err := s.GetAccountLogsPaged("u1", 0, "all", 10)
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(p1) != 10 {
+		t.Fatalf("page1 len = %d, want 10", len(p1))
+	}
+	// Descending id order.
+	for i := 1; i < len(p1); i++ {
+		if p1[i].ID >= p1[i-1].ID {
+			t.Fatalf("not descending at %d: %d >= %d", i, p1[i].ID, p1[i-1].ID)
+		}
+	}
+	// Only u1 rows.
+	for _, l := range p1 {
+		if l.UserID != "u1" {
+			t.Fatalf("leaked row from %q", l.UserID)
+		}
+	}
+
+	p2, err := s.GetAccountLogsPaged("u1", p1[len(p1)-1].ID, "all", 10)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(p2) != 10 {
+		t.Fatalf("page2 len = %d, want 10", len(p2))
+	}
+	// No overlap between pages.
+	seen := map[int64]bool{}
+	for _, l := range p1 {
+		seen[l.ID] = true
+	}
+	for _, l := range p2 {
+		if seen[l.ID] {
+			t.Fatalf("page2 overlaps page1 at id %d", l.ID)
+		}
+	}
+
+	// Last page is short → caller derives has_more=false.
+	p3, err := s.GetAccountLogsPaged("u1", p2[len(p2)-1].ID, "all", 10)
+	if err != nil {
+		t.Fatalf("page3: %v", err)
+	}
+	if len(p3) != 5 {
+		t.Errorf("page3 len = %d, want 5 (25 total - 20)", len(p3))
+	}
+}
+
+func TestGetAccountLogsPagedFilters(t *testing.T) {
+	s := openTestStore(t)
+	seedLogs(t, s, "u1", 30)
+
+	errs, err := s.GetAccountLogsPaged("u1", 0, "errors", 100)
+	if err != nil {
+		t.Fatalf("errors: %v", err)
+	}
+	if len(errs) == 0 {
+		t.Fatal("expected some error rows")
+	}
+	for _, l := range errs {
+		if l.StatusCode < 400 {
+			t.Errorf("errors filter returned status %d", l.StatusCode)
+		}
+	}
+
+	streams, err := s.GetAccountLogsPaged("u1", 0, "stream", 100)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(streams) == 0 {
+		t.Fatal("expected some stream rows")
+	}
+	for _, l := range streams {
+		if !l.Stream {
+			t.Error("stream filter returned a non-stream row")
+		}
+	}
+
+	all, err := s.GetAccountLogsPaged("u1", 0, "all", 100)
+	if err != nil {
+		t.Fatalf("all: %v", err)
+	}
+	if len(all) != 30 {
+		t.Errorf("all len = %d, want 30", len(all))
+	}
+}
+
+// insertLogAt inserts a request_log row with an explicit UTC created_at, since
+// LogRequest always uses the column default (now).
+func insertLogAt(t *testing.T, s *Store, userID, model, endpoint, createdUTC string, status int) {
+	t.Helper()
+	stream := 0
+	_, err := s.db.Exec(
+		"INSERT INTO request_logs (api_key, model, endpoint, stream, status_code, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		userID, model, endpoint, stream, status, 7, createdUTC,
+	)
+	if err != nil {
+		t.Fatalf("insertLogAt %q/%q: %v", model, createdUTC, err)
+	}
+}
+
+// TestGetAccountLogsQueryFilters covers endpoint, real-model, and date-window
+// filters, plus their composition with limit/cursor.
+func TestGetAccountLogsQueryFilters(t *testing.T) {
+	s := openTestStore(t)
+	// Three rows on 2026-07-10 (two bare real models + one display form), all
+	// /v1/messages; the display form must collapse to the same real model.
+	insertLogAt(t, s, "u1", "claude-opus-4.8-hq", "/v1/messages", "2026-07-10 10:00:00", 200)
+	insertLogAt(t, s, "u1", "claude-opus-4.8-hq", "/v1/messages", "2026-07-10 12:00:00", 200)
+	insertLogAt(t, s, "u1", "claude-opus-4.8-hq(claude-opus-4.8)", "/v1/messages", "2026-07-10 14:00:00", 200)
+	// Different model + endpoint, on 2026-07-11.
+	insertLogAt(t, s, "u1", "gpt-4o", "/v1/chat/completions", "2026-07-11 09:00:00", 200)
+	insertLogAt(t, s, "u1", "claude-opus-4.8-hq", "/v1/chat/completions", "2026-07-11 11:00:00", 200)
+	// Other user must not leak.
+	insertLogAt(t, s, "other", "claude-opus-4.8-hq", "/v1/messages", "2026-07-10 10:00:00", 200)
+
+	// Real-model filter: bare + display form both match; gpt-4o excluded.
+	byModel, err := s.GetAccountLogsQuery("u1", LogQuery{Model: "claude-opus-4.8-hq", Limit: 100})
+	if err != nil {
+		t.Fatalf("model filter: %v", err)
+	}
+	if len(byModel) != 4 {
+		t.Errorf("model filter len = %d, want 4 (2 bare + 1 display + 1 on 07-11)", len(byModel))
+	}
+
+	// Endpoint filter.
+	byEndpoint, err := s.GetAccountLogsQuery("u1", LogQuery{Endpoint: "/v1/messages", Limit: 100})
+	if err != nil {
+		t.Fatalf("endpoint filter: %v", err)
+	}
+	if len(byEndpoint) != 3 {
+		t.Errorf("endpoint filter len = %d, want 3", len(byEndpoint))
+	}
+	for _, l := range byEndpoint {
+		if l.Endpoint != "/v1/messages" {
+			t.Errorf("endpoint filter returned %q", l.Endpoint)
+		}
+	}
+
+	// Date window covering 2026-07-10 UTC only (half-open).
+	byDate, err := s.GetAccountLogsQuery("u1", LogQuery{FromUTC: "2026-07-10 00:00:00", ToUTC: "2026-07-11 00:00:00", Limit: 100})
+	if err != nil {
+		t.Fatalf("date filter: %v", err)
+	}
+	if len(byDate) != 3 {
+		t.Errorf("date filter len = %d, want 3 (all on 07-10)", len(byDate))
+	}
+
+	// Composition: real-model + date window on 2026-07-11.
+	composed, err := s.GetAccountLogsQuery("u1", LogQuery{Model: "claude-opus-4.8-hq", FromUTC: "2026-07-11 00:00:00", ToUTC: "2026-07-12 00:00:00", Limit: 100})
+	if err != nil {
+		t.Fatalf("composed filter: %v", err)
+	}
+	if len(composed) != 1 {
+		t.Errorf("composed filter len = %d, want 1", len(composed))
+	}
+
+	// Limit + cursor still paginate within a filtered set.
+	page, err := s.GetAccountLogsQuery("u1", LogQuery{Model: "claude-opus-4.8-hq", Limit: 2})
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(page) != 2 {
+		t.Fatalf("page1 len = %d, want 2", len(page))
+	}
+	page2, err := s.GetAccountLogsQuery("u1", LogQuery{Model: "claude-opus-4.8-hq", BeforeID: page[len(page)-1].ID, Limit: 2})
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(page2) != 2 {
+		t.Errorf("page2 len = %d, want 2", len(page2))
+	}
+	seen := map[int64]bool{}
+	for _, l := range page {
+		seen[l.ID] = true
+	}
+	for _, l := range page2 {
+		if seen[l.ID] {
+			t.Errorf("page2 overlaps page1 at id %d", l.ID)
+		}
+	}
+}
+
+// TestGetAccountLogFilters checks distinct endpoints and real-model dedup,
+// including cross-user isolation.
+func TestGetAccountLogFilters(t *testing.T) {
+	s := openTestStore(t)
+	insertLogAt(t, s, "u1", "claude-opus-4.8-hq", "/v1/messages", "2026-07-10 10:00:00", 200)
+	insertLogAt(t, s, "u1", "claude-opus-4.8-hq(claude-opus-4.8)", "/v1/messages", "2026-07-10 11:00:00", 200)
+	insertLogAt(t, s, "u1", "gpt-4o", "/v1/chat/completions", "2026-07-10 12:00:00", 200)
+	insertLogAt(t, s, "u1", "", "", "2026-07-10 13:00:00", 200) // blank → excluded
+	insertLogAt(t, s, "other", "claude-sonnet-5", "/v1/messages", "2026-07-10 10:00:00", 200)
+
+	endpoints, models, err := s.GetAccountLogFilters("u1")
+	if err != nil {
+		t.Fatalf("GetAccountLogFilters: %v", err)
+	}
+	// Endpoints sorted, blanks excluded.
+	wantEndpoints := []string{"/v1/chat/completions", "/v1/messages"}
+	if len(endpoints) != len(wantEndpoints) {
+		t.Fatalf("endpoints = %v, want %v", endpoints, wantEndpoints)
+	}
+	for i, e := range endpoints {
+		if e != wantEndpoints[i] {
+			t.Errorf("endpoints[%d] = %q, want %q", i, e, wantEndpoints[i])
+		}
+	}
+	// Models are real names, deduped (display form collapses to bare).
+	wantModels := []string{"claude-opus-4.8-hq", "gpt-4o"}
+	if len(models) != len(wantModels) {
+		t.Fatalf("models = %v, want %v", models, wantModels)
+	}
+	for i, m := range models {
+		if m != wantModels[i] {
+			t.Errorf("models[%d] = %q, want %q", i, m, wantModels[i])
+		}
+	}
+}
+
+// TestLogIndexSurvivesTableRebuild verifies the cursor-pagination index exists
+// and is still present after migrateColumnDefaultsToUTC rebuilds request_logs.
+func TestLogIndexSurvivesTableRebuild(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	indexExists := func(s *Store) bool {
+		var name string
+		err := s.db.QueryRow(
+			"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_request_logs_api_key_id'",
+		).Scan(&name)
+		return err == nil && name != ""
+	}
+
+	// Fresh open: index created by migrate().
+	s := openAt(t, dbPath)
+	if !indexExists(s) {
+		t.Fatal("index missing on fresh db")
+	}
+	// Reintroduce the legacy localtime default so a reopen triggers the table
+	// rebuild path, which must not leave the index dropped.
+	if _, err := s.db.Exec(`
+		CREATE TABLE request_logs_legacy (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			api_key TEXT, model TEXT, endpoint TEXT,
+			stream INTEGER DEFAULT 0, status_code INTEGER, latency_ms INTEGER,
+			created_at TEXT DEFAULT (datetime('now', 'localtime')),
+			error_message TEXT DEFAULT '', input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0
+		);
+		DROP TABLE request_logs;
+		ALTER TABLE request_logs_legacy RENAME TO request_logs;
+	`); err != nil {
+		t.Fatalf("install legacy schema: %v", err)
+	}
+	s.Close()
+
+	s2 := openAt(t, dbPath)
+	defer s2.Close()
+	if !indexExists(s2) {
+		t.Error("index missing after table rebuild")
+	}
+}

@@ -218,8 +218,31 @@ export const api = {
     }),
   getAccountStats: (userId: string) =>
     request<AccountStats>(`/api/accounts/${encodeURIComponent(userId)}/stats`),
-  getAccountLogs: (userId: string, limit = 200) =>
-    request<{ logs: RequestLog[]; total: number }>(`/api/accounts/${encodeURIComponent(userId)}/logs?limit=${limit}`),
+  getAccountLogs: (
+    userId: string,
+    opts: {
+      limit?: number;
+      beforeId?: number;
+      filter?: 'all' | 'stream' | 'errors';
+      endpoint?: string;
+      model?: string;
+      date?: string; // YYYY-MM-DD in the configured display timezone
+    } = {},
+  ) => {
+    const { limit = 200, beforeId = 0, filter = 'all', endpoint, model, date } = opts;
+    const params = new URLSearchParams({ limit: String(limit), filter });
+    if (beforeId > 0) params.set('before_id', String(beforeId));
+    if (endpoint) params.set('endpoint', endpoint);
+    if (model) params.set('model', model);
+    if (date) params.set('date', date);
+    return request<{ logs: RequestLog[]; total: number; has_more: boolean }>(
+      `/api/accounts/${encodeURIComponent(userId)}/logs?${params.toString()}`,
+    );
+  },
+  getAccountLogFilters: (userId: string) =>
+    request<{ endpoints: string[]; models: string[] }>(
+      `/api/accounts/${encodeURIComponent(userId)}/log-filters`,
+    ).then((r) => ({ endpoints: r.endpoints || [], models: r.models || [] })),
   renewToken: (userId: string) =>
     request<{ ok: boolean; api_token: string }>(`/api/accounts/${encodeURIComponent(userId)}/renew-token`, { method: 'POST' }),
   autoLogin: () =>

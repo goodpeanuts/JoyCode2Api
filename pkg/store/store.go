@@ -336,6 +336,12 @@ func (s *Store) migrate() error {
 	// Migration: initialize display_order for existing accounts
 	s.migrateDisplayOrder()
 
+	// Index for cursor-paginated account log queries
+	// (WHERE api_key=? [AND ...] ORDER BY id DESC). Created last so it survives
+	// migrateColumnDefaultsToUTC, which rebuilds request_logs and would otherwise
+	// drop an earlier index.
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_request_logs_api_key_id ON request_logs (api_key, id DESC)")
+
 	return nil
 }
 
@@ -1575,12 +1581,84 @@ func (s *Store) GetAccountStats(userID string) (*AccountStats, error) {
 }
 
 func (s *Store) GetAccountLogs(userID string, limit int) ([]RequestLog, error) {
-	if limit <= 0 {
-		limit = 100
+	return s.GetAccountLogsPaged(userID, 0, "all", limit)
+}
+
+// LogQuery parameterises GetAccountLogsQuery. Empty/zero fields are ignored,
+// so callers select only the filters they need.
+//
+//	BeforeID: only rows with id < BeforeID (<=0 starts from the newest row),
+//	          enabling stable cursor pagination.
+//	Category: "stream" (stream=1) or "errors" (status_code>=400); any other
+//	          value returns all rows.
+//	Endpoint: exact endpoint match; "" returns all.
+//	Model:    the REAL upstream model name. The stored model column may hold a
+//	          display string like "Resolved(Requested)"; a non-empty Model is
+//	          matched against either the exact stored value or the part before
+//	          the first '('. "" returns all.
+//	FromUTC / ToUTC: half-open UTC window [FromUTC, ToUTC) compared against
+//	          created_at (SQLite datetime('now') text, "YYYY-MM-DD HH:MM:SS").
+//	Limit:    page size (defaults to 100 when <=0).
+type LogQuery struct {
+	BeforeID int64
+	Category string
+	Endpoint string
+	Model    string
+	FromUTC  string
+	ToUTC    string
+	Limit    int
+}
+
+// GetAccountLogsPaged returns a page of request logs for userID, newest first.
+// It is retained as a thin wrapper for backwards compatibility; new callers
+// should use GetAccountLogsQuery.
+func (s *Store) GetAccountLogsPaged(userID string, beforeID int64, filter string, limit int) ([]RequestLog, error) {
+	return s.GetAccountLogsQuery(userID, LogQuery{BeforeID: beforeID, Category: filter, Limit: limit})
+}
+
+// GetAccountLogsQuery returns a page of request logs for userID matching the
+// given filters, newest first. See LogQuery for the meaning of each field.
+func (s *Store) GetAccountLogsQuery(userID string, q LogQuery) ([]RequestLog, error) {
+	if q.Limit <= 0 {
+		q.Limit = 100
 	}
+
+	where := "api_key = ?"
+	args := []interface{}{userID}
+	switch q.Category {
+	case "stream":
+		where += " AND stream = 1"
+	case "errors":
+		where += " AND status_code >= 400"
+	}
+	if q.Endpoint != "" {
+		where += " AND endpoint = ?"
+		args = append(args, q.Endpoint)
+	}
+	if q.Model != "" {
+		// Match the exact stored value OR the real-model prefix (text before
+		// the first '('), so a display string "Resolved(Requested)" and the
+		// bare "Resolved" value collapse to the same real upstream model.
+		where += " AND (model = ? OR (instr(model, '(') > 0 AND substr(model, 1, instr(model, '(') - 1) = ?))"
+		args = append(args, q.Model, q.Model)
+	}
+	if q.FromUTC != "" {
+		where += " AND created_at >= ?"
+		args = append(args, q.FromUTC)
+	}
+	if q.ToUTC != "" {
+		where += " AND created_at < ?"
+		args = append(args, q.ToUTC)
+	}
+	if q.BeforeID > 0 {
+		where += " AND id < ?"
+		args = append(args, q.BeforeID)
+	}
+	args = append(args, q.Limit)
+
 	rows, err := s.db.Query(
-		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), created_at FROM request_logs WHERE api_key = ? ORDER BY id DESC LIMIT ?",
-		userID, limit,
+		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), created_at FROM request_logs WHERE "+where+" ORDER BY id DESC LIMIT ?",
+		args...,
 	)
 	if err != nil {
 		return nil, err
@@ -1598,6 +1676,62 @@ func (s *Store) GetAccountLogs(userID string, limit int) ([]RequestLog, error) {
 		logs = append(logs, l)
 	}
 	return logs, rows.Err()
+}
+
+// realModelOf returns the real upstream model name from a stored model value.
+// Display strings look like "Resolved(Requested)"; the real name is the text
+// before the first '('. Values without '(' are returned unchanged.
+func realModelOf(m string) string {
+	if i := strings.IndexByte(m, '('); i > 0 {
+		return m[:i]
+	}
+	return m
+}
+
+// GetAccountLogFilters returns the distinct endpoints and real upstream model
+// names present in a user's logs, for populating filter dropdowns.
+func (s *Store) GetAccountLogFilters(userID string) (endpoints, models []string, err error) {
+	erows, err := s.db.Query("SELECT DISTINCT endpoint FROM request_logs WHERE api_key = ? AND endpoint != '' ORDER BY endpoint", userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for erows.Next() {
+		var e string
+		if err := erows.Scan(&e); err != nil {
+			erows.Close()
+			return nil, nil, err
+		}
+		endpoints = append(endpoints, e)
+	}
+	if err := erows.Err(); err != nil {
+		erows.Close()
+		return nil, nil, err
+	}
+	erows.Close()
+
+	mrows, err := s.db.Query("SELECT DISTINCT model FROM request_logs WHERE api_key = ? AND model != '' ORDER BY model", userID)
+	if err != nil {
+		return endpoints, nil, err
+	}
+	seen := make(map[string]bool)
+	for mrows.Next() {
+		var m string
+		if err := mrows.Scan(&m); err != nil {
+			mrows.Close()
+			return endpoints, nil, err
+		}
+		real := realModelOf(m)
+		if !seen[real] {
+			seen[real] = true
+			models = append(models, real)
+		}
+	}
+	if err := mrows.Err(); err != nil {
+		mrows.Close()
+		return endpoints, nil, err
+	}
+	mrows.Close()
+	return endpoints, models, nil
 }
 
 func (s *Store) GetRecentLogs(limit int) ([]RequestLog, error) {

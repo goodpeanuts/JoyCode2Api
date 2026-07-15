@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Alert, Card, Row, Col, Statistic, Typography, Spin, Tag, Select, Button,
   message, Space, Table, Badge, Segmented, Popconfirm, Tooltip, Divider,
+  DatePicker,
 } from 'antd';
 import {
   ArrowLeftOutlined, ApiOutlined, ThunderboltOutlined,
@@ -15,6 +16,7 @@ import {
   ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area,
 } from 'recharts';
 import { useParams, useNavigate } from 'react-router-dom';
+import dayjs, { type Dayjs } from 'dayjs';
 import { api, accountDisplayName } from '../api';
 import type { Account, AccountStats, ModelInfo, RequestLog } from '../api';
 import { useTimezone, formatInTimezone, hourKeyInTimezone } from '../hooks/useTimezone';
@@ -123,26 +125,85 @@ const AccountDetail: React.FC = () => {
   const [modelLoading, setModelLoading] = useState(false);
   const [savingModel, setSavingModel] = useState(false);
   const [logFilter, setLogFilter] = useState<string>('all');
+  const [logsHasMore, setLogsHasMore] = useState(false);
+  const [logsLoadingMore, setLogsLoadingMore] = useState(false);
+  const [logEndpoint, setLogEndpoint] = useState<string>('');
+  const [logModel, setLogModel] = useState<string>('');
+  const [logDate, setLogDate] = useState<Dayjs | null>(null);
+  const [logPageSize, setLogPageSize] = useState<number>(50);
+  const [endpointOptions, setEndpointOptions] = useState<string[]>([]);
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [activeSessions, setActiveSessions] = useState(0);
 
   const decodedKey = userId ? decodeURIComponent(userId) : '';
 
+  const LOG_PAGE_SIZES = [20, 50, 100, 500];
+
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [accounts, statsData, logsData] = await Promise.all([
+      const [accounts, statsData] = await Promise.all([
         api.listAccounts(),
         api.getAccountStats(decodedKey),
-        api.getAccountLogs(decodedKey, 500),
       ]);
       const acc = accounts.find((a) => a.user_id === decodedKey);
       setAccount(acc || null);
       setStats(statsData);
-      setLogs(logsData.logs || []);
     } catch (e: unknown) {
       message.error(e instanceof Error ? e.message : '加载失败');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Loads the first page of logs for the current filter, replacing the list.
+  const loadLogs = async () => {
+    try {
+      const data = await api.getAccountLogs(decodedKey, {
+        limit: logPageSize,
+        filter: logFilter as 'all' | 'stream' | 'errors',
+        endpoint: logEndpoint || undefined,
+        model: logModel || undefined,
+        date: logDate ? logDate.format('YYYY-MM-DD') : undefined,
+      });
+      setLogs(data.logs || []);
+      setLogsHasMore(!!data.has_more);
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '加载日志失败');
+    }
+  };
+
+  // Appends the next page using the oldest loaded log id as the cursor.
+  const loadMoreLogs = async () => {
+    if (logsLoadingMore || logs.length === 0) return;
+    setLogsLoadingMore(true);
+    try {
+      const beforeId = logs[logs.length - 1].id;
+      const data = await api.getAccountLogs(decodedKey, {
+        limit: logPageSize,
+        beforeId,
+        filter: logFilter as 'all' | 'stream' | 'errors',
+        endpoint: logEndpoint || undefined,
+        model: logModel || undefined,
+        date: logDate ? logDate.format('YYYY-MM-DD') : undefined,
+      });
+      setLogs((prev) => [...prev, ...(data.logs || [])]);
+      setLogsHasMore(!!data.has_more);
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '加载更多日志失败');
+    } finally {
+      setLogsLoadingMore(false);
+    }
+  };
+
+  // Loads distinct endpoints / real upstream model names for the dropdowns.
+  const fetchLogFilters = async () => {
+    try {
+      const data = await api.getAccountLogFilters(decodedKey);
+      setEndpointOptions(data.endpoints);
+      setModelOptions(data.models);
+    } catch {
+      // ignore — dropdowns just stay empty
     }
   };
 
@@ -160,6 +221,9 @@ const AccountDetail: React.FC = () => {
 
   useEffect(() => { fetchData(); }, [decodedKey]);
   useEffect(() => { fetchModels(); }, [decodedKey]);
+  useEffect(() => { fetchLogFilters(); }, [decodedKey]);
+  // Any filter / page-size change restarts from the newest page.
+  useEffect(() => { loadLogs(); }, [decodedKey, logFilter, logEndpoint, logModel, logDate, logPageSize]);
 
   // Poll active sessions every 5s
   useEffect(() => {
@@ -198,12 +262,6 @@ const AccountDetail: React.FC = () => {
     value: m.id,
     description: m.description,
   }));
-
-  const filteredLogs = logFilter === 'all'
-    ? logs
-    : logFilter === 'errors'
-      ? logs.filter((l) => l.status_code >= 400)
-      : logs.filter((l) => l.stream);
 
   const endpointData = stats?.by_endpoint.map((e) => ({
     name: e.endpoint.replace('/v1/', ''),
@@ -715,29 +773,74 @@ const AccountDetail: React.FC = () => {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <ClockCircleOutlined />
             <span>请求日志</span>
-            <Tag>{logs.length} 条</Tag>
+            <Tag>已加载 {logs.length} 条</Tag>
           </div>
         }
         size="small"
-        extra={
-          <Segmented
-            size="small"
-            value={logFilter}
-            onChange={(v) => setLogFilter(v as string)}
-            options={[
-              { label: '全部', value: 'all' },
-              { label: '流式', value: 'stream' },
-              { label: '错误', value: 'errors' },
-            ]}
-          />
-        }
       >
+        <Row gutter={[8, 8]} style={{ marginBottom: 12 }}>
+          <Col>
+            <DatePicker
+              size="small"
+              allowClear
+              placeholder="按日期"
+              value={logDate}
+              onChange={(v) => setLogDate(v ? dayjs(v) : null)}
+            />
+          </Col>
+          <Col>
+            <Select
+              size="small"
+              allowClear
+              placeholder="端点"
+              style={{ minWidth: 180 }}
+              value={logEndpoint || undefined}
+              onChange={(v) => setLogEndpoint(v ?? '')}
+              options={endpointOptions.map((e) => ({ label: e, value: e }))}
+            />
+          </Col>
+          <Col>
+            <Select
+              size="small"
+              allowClear
+              placeholder="模型"
+              style={{ minWidth: 200 }}
+              value={logModel || undefined}
+              onChange={(v) => setLogModel(v ?? '')}
+              options={modelOptions.map((m) => ({ label: m, value: m }))}
+            />
+          </Col>
+          <Col>
+            <Segmented
+              size="small"
+              value={logFilter}
+              onChange={(v) => setLogFilter(v as string)}
+              options={[
+                { label: '全部', value: 'all' },
+                { label: '流式', value: 'stream' },
+                { label: '错误', value: 'errors' },
+              ]}
+            />
+          </Col>
+          <Col flex="auto" style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Space size="small">
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>每页</Typography.Text>
+              <Select
+                size="small"
+                style={{ width: 80 }}
+                value={logPageSize}
+                onChange={(v) => setLogPageSize(v)}
+                options={LOG_PAGE_SIZES.map((n) => ({ label: String(n), value: n }))}
+              />
+            </Space>
+          </Col>
+        </Row>
         <Table
-          dataSource={filteredLogs}
+          dataSource={logs}
           columns={logColumns}
           rowKey="id"
           size="small"
-          pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 条` }}
+          pagination={{ pageSize: logPageSize, showSizeChanger: false, showTotal: (t) => `已加载 ${t} 条` }}
           scroll={{ x: 980 }}
           locale={{ emptyText: '暂无请求记录' }}
           expandable={{
@@ -794,6 +897,13 @@ const AccountDetail: React.FC = () => {
             ),
           }}
         />
+        {logsHasMore && (
+          <div style={{ textAlign: 'center', marginTop: 12 }}>
+            <Button onClick={loadMoreLogs} loading={logsLoadingMore}>
+              加载更多
+            </Button>
+          </div>
+        )}
       </Card>
     </div>
   );
