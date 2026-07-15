@@ -74,7 +74,7 @@ Claude Code / Cursor / Windsurf  →  JoyCodeProxy  →  JoyCode API
 macOS / Linux 一条命令装好，自动下载对应平台二进制并安装为全局命令 `jcproxy`：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vibe-coding-labs/JoyCodeProxy/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/goodpeanuts/JoyCode2Api/erp/install.sh | bash
 ```
 
 装完直接用：
@@ -88,7 +88,7 @@ jcproxy uninstall    # 卸载（彻底清除数据加 --purge --yes）
 
 ### 方式二：手动下载二进制
 
-去 [Releases](https://github.com/vibe-coding-labs/JoyCodeProxy/releases) 下载对应平台的文件，命令行直接运行。前端已打包进二进制，无需解压。
+去 [Releases](https://github.com/goodpeanuts/JoyCode2Api/releases) 下载对应平台的文件，命令行直接运行。前端已打包进二进制，无需解压。
 
 **macOS (Apple Silicon)**
 

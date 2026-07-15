@@ -76,7 +76,7 @@ jobs:
             macOS / Linux 一条命令装好，安装为全局命令 `jcproxy`：
 
             ```
-            curl -fsSL https://raw.githubusercontent.com/vibe-coding-labs/JoyCodeProxy/main/install.sh | bash
+            curl -fsSL https://raw.githubusercontent.com/goodpeanuts/JoyCode2Api/erp/install.sh | bash
             ```
 
             装完直接 `jcproxy serve` 启动，`jcproxy uninstall` 卸载。

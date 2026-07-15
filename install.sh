@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # jcproxy 一键安装脚本
 #
-#   curl -fsSL https://raw.githubusercontent.com/vibe-coding-labs/JoyCodeProxy/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/goodpeanuts/JoyCode2Api/erp/install.sh | bash
 #
 # 自动探测平台、从 GitHub Releases 下载最新二进制，安装为全局命令 jcproxy。
 # 可用环境变量：
@@ -9,7 +9,7 @@
 #   VERSION       指定版本 tag（默认 latest）
 set -euo pipefail
 
-REPO="vibe-coding-labs/JoyCodeProxy"
+REPO="goodpeanuts/JoyCode2Api"
 BIN_NAME="jcproxy"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 VERSION="${VERSION:-latest}"
