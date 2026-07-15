@@ -29,6 +29,11 @@ const (
 	logFileName       = ".joycode-proxy/logs/daemon.log"
 	maxRestartDelay   = 30 * time.Second
 	baseRestartDelay  = 1 * time.Second
+	// A child that exits sooner than this is considered a "fast failure"
+	// (likely a deterministic config error rather than a transient crash).
+	fastFailThreshold = 5 * time.Second
+	// Stop restarting after this many consecutive fast failures.
+	maxFastFailures = 5
 )
 
 var (
@@ -293,6 +298,7 @@ func RunSupervisor(port int) {
 
 	var mu sync.Mutex
 	delay := baseRestartDelay
+	fastFailures := 0
 
 	for {
 		binPath, err := os.Executable()
@@ -325,6 +331,7 @@ func RunSupervisor(port int) {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 		log.Printf("[supervisor] spawning child process")
+		startedAt := time.Now()
 		if err := cmd.Start(); err != nil {
 			log.Printf("[supervisor] failed to start child: %v", err)
 			mu.Lock()
@@ -341,11 +348,31 @@ func RunSupervisor(port int) {
 
 		select {
 		case err := <-done:
+			ranFor := time.Since(startedAt)
 			if err != nil {
-				log.Printf("[supervisor] child crashed: %v — restarting in %v", err, delay)
+				log.Printf("[supervisor] child crashed after %v: %v", ranFor.Round(time.Millisecond), err)
 			} else {
-				log.Printf("[supervisor] child exited cleanly — restarting in %v", delay)
+				log.Printf("[supervisor] child exited cleanly after %v", ranFor.Round(time.Millisecond))
 			}
+
+			// Track consecutive fast failures: a child that dies almost
+			// immediately is a deterministic error (bad config, port in use,
+			// invalid flags) that restarting won't fix. Give up rather than
+			// spin forever.
+			if ranFor < fastFailThreshold {
+				fastFailures++
+				if fastFailures >= maxFastFailures {
+					log.Printf("[supervisor] child kept failing fast (%d consecutive times); giving up.", fastFailures)
+					log.Printf("[supervisor] check config/port/credentials, then run 'jcproxy daemon restart'.")
+					removePIDFile()
+					return
+				}
+			} else {
+				fastFailures = 0
+				delay = baseRestartDelay
+			}
+
+			log.Printf("[supervisor] restarting in %v", delay)
 			mu.Lock()
 			time.Sleep(delay)
 			delay = minDuration(delay*2, maxRestartDelay)

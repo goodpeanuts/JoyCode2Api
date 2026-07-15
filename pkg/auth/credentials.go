@@ -60,8 +60,8 @@ const (
 //  1. JOYCODE_STATE_DB（显式，IDE）
 //  2. JOYCODE_VSCODE_STATE_DB（显式，VS Code 插件）
 //  3. 容器内 IDE 路径（Docker 挂载）
-//  4. macOS VS Code 插件全局 state.vscdb
-//  5. macOS JoyCoder IDE state.vscdb
+//  4. macOS VS Code 插件 / JoyCoder IDE 全局 state.vscdb
+//  5. Linux VS Code 插件全局 state.vscdb（~/.config/Code/...）
 func LoadFromSystem() (*Credentials, error) {
 	home, homeErr := os.UserHomeDir()
 
@@ -82,15 +82,22 @@ func LoadFromSystem() (*Credentials, error) {
 	sources = append(sources, src{containerStateDB, ideItemKey, parseIDE, "container IDE state"})
 
 	if homeErr == nil {
-		vscodeDB := filepath.Join(home,
-			"Library", "Application Support",
-			"Code", "User", "globalStorage", "state.vscdb")
-		sources = append(sources, src{vscodeDB, pluginItemKey, parsePlugin, "VS Code plugin state"})
+		switch runtime.GOOS {
+		case "darwin":
+			vscodeDB := filepath.Join(home,
+				"Library", "Application Support",
+				"Code", "User", "globalStorage", "state.vscdb")
+			sources = append(sources, src{vscodeDB, pluginItemKey, parsePlugin, "VS Code plugin state"})
 
-		ideDB := filepath.Join(home,
-			"Library", "Application Support",
-			"JoyCode", "User", "globalStorage", "state.vscdb")
-		sources = append(sources, src{ideDB, ideItemKey, parseIDE, "JoyCoder IDE state"})
+			ideDB := filepath.Join(home,
+				"Library", "Application Support",
+				"JoyCode", "User", "globalStorage", "state.vscdb")
+			sources = append(sources, src{ideDB, ideItemKey, parseIDE, "JoyCoder IDE state"})
+		case "linux":
+			vscodeDB := filepath.Join(home,
+				".config", "Code", "User", "globalStorage", "state.vscdb")
+			sources = append(sources, src{vscodeDB, pluginItemKey, parsePlugin, "VS Code plugin state"})
+		}
 	}
 
 	var lastErr error
@@ -109,8 +116,8 @@ func LoadFromSystem() (*Credentials, error) {
 		return cred, nil
 	}
 
-	if runtime.GOOS != "darwin" && homeErr != nil {
-		return nil, fmt.Errorf("auto credential extraction requires macOS, or mount a state.vscdb and set %s/%s", stateDBEnv, vscodeStateDBEnv)
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" && homeErr != nil {
+		return nil, fmt.Errorf("cannot locate a default state.vscdb on this platform; mount one and set %s/%s", stateDBEnv, vscodeStateDBEnv)
 	}
 	if lastErr != nil {
 		return nil, fmt.Errorf("no usable JoyCode login found (last tried %w); please log in to the JoyCode VS Code plugin or JoyCoder IDE", lastErr)

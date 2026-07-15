@@ -15,9 +15,16 @@ func TestLoadFromSystem_NonDarwin(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("skipping non-darwin test on darwin")
 	}
+	// Isolate to an empty HOME so a real ~/.config/Code/... on the test
+	// machine cannot satisfy detection; non-darwin with no credentials must error.
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
 	_, err := LoadFromSystem()
 	if err == nil {
-		t.Fatal("expected error on non-darwin platform, got nil")
+		t.Fatal("expected error on non-darwin platform with no credentials, got nil")
 	}
 }
 
@@ -269,6 +276,30 @@ func TestLoadFromSystem_VSCodePlugin(t *testing.T) {
 	}
 }
 
+func TestLoadFromSystem_LinuxVSCodePlugin(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("skipping linux-specific test on non-linux")
+	}
+	tmpDir := t.TempDir()
+
+	createLinuxVSCodeTestDB(t, tmpDir, `{"jdhLoginInfo":{"ptKey":"linux-pt-key","userId":"linux-user","loginType":"ERP","tenant":"JD"}}`)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	creds, err := LoadFromSystem()
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if creds.PtKey != "linux-pt-key" {
+		t.Errorf("PtKey = %q, want %q", creds.PtKey, "linux-pt-key")
+	}
+	if creds.UserID != "linux-user" {
+		t.Errorf("UserID = %q, want %q", creds.UserID, "linux-user")
+	}
+}
+
 func TestLoadFromSystem_VSCodeStateDBEnv(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "state.vscdb")
@@ -358,6 +389,37 @@ func createVSCodeTestDB(t *testing.T, baseDir string, jsonValue string) {
 
 	_, err = db.Exec("INSERT INTO ItemTable (key, value) VALUES ('JoyCoder.joycoder-fe', ?)", jsonValue)
 	if err != nil {
+		db.Close()
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("failed to close database after setup: %v", err)
+	}
+}
+
+// createLinuxVSCodeTestDB 在 baseDir 下构造 Linux VS Code 插件的
+// ~/.config/Code/User/globalStorage/state.vscdb，键为 JoyCoder.joycoder-fe。
+func createLinuxVSCodeTestDB(t *testing.T, baseDir string, jsonValue string) {
+	t.Helper()
+
+	dbDir := filepath.Join(baseDir, ".config", "Code", "User", "globalStorage")
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		t.Fatalf("failed to create db directory: %v", err)
+	}
+
+	dbPath := filepath.Join(dbDir, "state.vscdb")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("failed to create sqlite database: %v", err)
+	}
+
+	if _, err := db.Exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)"); err != nil {
+		db.Close()
+		t.Fatalf("failed to create ItemTable: %v", err)
+	}
+
+	if _, err := db.Exec("INSERT INTO ItemTable (key, value) VALUES ('JoyCoder.joycoder-fe', ?)", jsonValue); err != nil {
 		db.Close()
 		t.Fatalf("failed to insert test data: %v", err)
 	}

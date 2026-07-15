@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 
 	"github.com/spf13/cobra"
@@ -53,11 +52,11 @@ func resolveClient() (*joycode.Client, error) {
 	} else {
 		detected, err := auth.LoadFromSystem()
 		if err != nil {
-			if !skipValidation {
-				return nil, fmt.Errorf("cannot auto-detect credentials: %w\n  Please provide --ptkey and --userid flags, or log in to JoyCode first", err)
-			}
-			// With --skip-validation, create a placeholder client; real requests use DB accounts via resolver
-			log.Printf("Warning: cannot auto-detect credentials (%v); using placeholder (requests will use DB accounts)", err)
+			// No local credentials: start with a placeholder client so the server
+			// (and dashboard) still come up. Real requests are served by DB accounts
+			// via the per-request resolver, or the user logs in through the dashboard.
+			log.Printf("Warning: no JoyCode credentials found (%v)", err)
+			log.Printf("  Server will start with a placeholder; open the dashboard to log in or add an account.")
 			creds = &auth.Credentials{PtKey: "placeholder", UserID: "placeholder"}
 			source = "placeholder (no local JoyCode session)"
 		} else {
@@ -83,10 +82,18 @@ func resolveClient() (*joycode.Client, error) {
 		log.Printf("Credential validation skipped (--skip-validation)")
 		return client, nil
 	}
+	if creds.PtKey == "placeholder" {
+		// Nothing to validate; DB accounts / dashboard login will supply real credentials.
+		return client, nil
+	}
 
 	log.Printf("Validating credentials...")
 	if err := client.Validate(); err != nil {
-		return nil, fmt.Errorf("%w\n  Your credentials may have expired. Try re-logging into JoyCode or provide fresh --ptkey and --userid", err)
+		// Non-fatal: keep serving so the dashboard stays reachable for re-login.
+		// Per-request DB accounts can still override this system client.
+		log.Printf("Warning: credential validation failed (%v)", err)
+		log.Printf("  Your credentials may have expired — re-log in via the dashboard, or provide fresh --ptkey/--userid.")
+		return client, nil
 	}
 	log.Printf("Credentials validated successfully")
 	return client, nil
