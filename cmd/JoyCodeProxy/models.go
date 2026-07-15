@@ -11,7 +11,7 @@ var modelsCmd = &cobra.Command{
 	Use:     "models",
 	Short:   "列出可用的 AI 模型",
 	GroupID: "query",
-	Example: `  joycode-proxy models`,
+	Example: `  jcproxy models`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := resolveClient()
 		if err != nil {

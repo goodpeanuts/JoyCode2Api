@@ -22,10 +22,10 @@ var serviceInstallCmd = &cobra.Command{
 	Short: "安装并启动后台服务",
 	Long:  "将代理安装为系统后台服务。安装后自动启动，支持开机自启和崩溃自动重启。",
 	Example: `  # 使用默认端口 34891 安装
-  joycode-proxy service install
+  jcproxy service install
 
   # 指定端口
-  joycode-proxy service install -p 8080`,
+  jcproxy service install -p 8080`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return installService(servePort)
 	},
@@ -34,7 +34,7 @@ var serviceInstallCmd = &cobra.Command{
 var serviceUninstallCmd = &cobra.Command{
 	Use:     "uninstall",
 	Short:   "停止并移除后台服务",
-	Example: `  joycode-proxy service uninstall`,
+	Example: `  jcproxy service uninstall`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return uninstallService()
 	},
@@ -43,7 +43,7 @@ var serviceUninstallCmd = &cobra.Command{
 var serviceStatusCmd = &cobra.Command{
 	Use:     "status",
 	Short:   "查看服务运行状态",
-	Example: `  joycode-proxy service status`,
+	Example: `  jcproxy service status`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return serviceStatus()
 	},

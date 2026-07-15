@@ -14,7 +14,7 @@ var versionCmd = &cobra.Command{
 	Use:     "version",
 	Short:   "显示版本信息",
 	GroupID: "query",
-	Example: `  joycode-proxy version`,
+	Example: `  jcproxy version`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("JoyCode Proxy %s\n", Version)
 		fmt.Printf("  JoyCode API: %s\n", joycode.ClientVersion)

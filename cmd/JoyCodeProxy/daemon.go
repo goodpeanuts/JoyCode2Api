@@ -49,10 +49,10 @@ var daemonStartCmd = &cobra.Command{
 	Long: "启动 JoyCode Proxy 守护进程。Supervisor 进程监控子进程，" +
 		"子进程崩溃时自动重启（1s → 2s → 4s → ... → 30s 指数退避）。",
 	Example: `  # 使用默认端口启动
-  joycode-proxy daemon start
+  jcproxy daemon start
 
   # 指定端口
-  joycode-proxy daemon start -p 8080`,
+  jcproxy daemon start -p 8080`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return startDaemon()
 	},
@@ -61,7 +61,7 @@ var daemonStartCmd = &cobra.Command{
 var daemonStopCmd = &cobra.Command{
 	Use:     "stop",
 	Short:   "停止守护进程",
-	Example: `  joycode-proxy daemon stop`,
+	Example: `  jcproxy daemon stop`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return stopDaemon()
 	},
@@ -70,7 +70,7 @@ var daemonStopCmd = &cobra.Command{
 var daemonRestartCmd = &cobra.Command{
 	Use:     "restart",
 	Short:   "重启守护进程",
-	Example: `  joycode-proxy daemon restart`,
+	Example: `  jcproxy daemon restart`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := stopDaemon(); err != nil {
 			log.Printf("stop warning: %v", err)
@@ -83,7 +83,7 @@ var daemonRestartCmd = &cobra.Command{
 var daemonStatusCmd = &cobra.Command{
 	Use:     "status",
 	Short:   "查看守护进程状态",
-	Example: `  joycode-proxy daemon status`,
+	Example: `  jcproxy daemon status`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return daemonStatusCmdRun()
 	},
@@ -92,8 +92,8 @@ var daemonStatusCmd = &cobra.Command{
 var daemonLogsCmd = &cobra.Command{
 	Use:     "logs",
 	Short:   "查看守护进程日志（最后 N 行）",
-	Example: `  joycode-proxy daemon logs
-  joycode-proxy daemon logs -n 50`,
+	Example: `  jcproxy daemon logs
+  jcproxy daemon logs -n 50`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return tailDaemonLogs(daemonLines)
 	},

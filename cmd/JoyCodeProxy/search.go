@@ -11,7 +11,7 @@ var searchCmd = &cobra.Command{
 	Short:   "网页搜索",
 	Long:    "使用 JoyCode 内置搜索 API 进行网页搜索。",
 	GroupID: "query",
-	Example: `  joycode-proxy search "Go 语言并发编程"`,
+	Example: `  jcproxy search "Go 语言并发编程"`,
 	Args:    cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := resolveClient()

@@ -144,7 +144,7 @@ func serviceStatus() error {
 	}
 	if !found {
 		fmt.Println("Service installed but not running (plist exists, not in launchctl).")
-		fmt.Println("Run 'joycode-proxy service install' to start it.")
+		fmt.Println("Run 'jcproxy service install' to start it.")
 	}
 
 	fmt.Printf("\nLogs: %s/\n", filepath.Join(home, logDir))

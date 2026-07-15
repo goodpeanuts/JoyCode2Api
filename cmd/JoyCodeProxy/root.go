@@ -17,16 +17,16 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "joycode-proxy",
+	Use:   "jcproxy",
 	Short: "JoyCode API Proxy — 将 JoyCode API 转换为 OpenAI/Anthropic 兼容格式",
 	Long: `JoyCode API Proxy — 将 JoyCode 内部 API 转换为 OpenAI / Anthropic 兼容格式。
 
 让 Claude Code、Codex 等 AI 编程工具可以直接使用 JoyCode 的模型服务。
 
 快速开始:
-  joycode-proxy serve                  # 启动代理服务器（默认端口 34891）
-  joycode-proxy service install        # 安装为 macOS 服务（开机自启、崩溃重启）
-  joycode-proxy check                  # 检查代理是否运行
+  jcproxy serve                  # 启动代理服务器（默认端口 34891）
+  jcproxy service install        # 安装为 macOS 服务（开机自启、崩溃重启）
+  jcproxy check                  # 检查代理是否运行
 
 配置 Claude Code:
   export ANTHROPIC_BASE_URL=http://localhost:34891

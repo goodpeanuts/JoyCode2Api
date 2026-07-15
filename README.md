@@ -8,7 +8,7 @@
 
 JoyAI-Code · GLM-5.1 · Kimi-K2.6 · MiniMax-M2.7 · Doubao-Seed-2.0-pro
 
-[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat&logo=react)](https://react.dev/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=flat)](./LICENSE)
 
@@ -65,30 +65,69 @@ Claude Code / Cursor / Windsurf  →  JoyCodeProxy  →  JoyCode API
 - **多模型可选** — JoyAI-Code、GLM-5.1、GLM-5、GLM-4.7、Kimi-K2.6、Kimi-K2.5、MiniMax-M2.7、Doubao-Seed-2.0-pro
 - **多账号管理** — Dashboard 上扫码添加多个 JD 账号，每个账号有独立的 API Key
 - **智能上下文截断** — 对话过长时自动截断早期消息，不会卡死，`/compact` 正常工作
-- **单文件部署** — 前端打包进 Go 二进制，丢一个文件就能跑，也支持 Docker
+- **单文件部署** — 前端打包进 Go 二进制，下载一个文件就能跑，也支持 Docker 和后台守护进程
 
 ## 怎么跑起来
 
-### 构建
+### 方式一：一键安装（最快）
 
-需要 Go 1.22+ 和 Node.js 18+。
+macOS / Linux 一条命令装好，自动下载对应平台二进制并安装为全局命令 `jcproxy`：
 
 ```bash
-# 先构建前端
-cd web && npm install && npm run build && cd ..
-
-# 再构建后端（前端会自动嵌入）
-go build -o joycode_proxy_bin ./cmd/JoyCodeProxy/
+curl -fsSL https://raw.githubusercontent.com/vibe-coding-labs/JoyCodeProxy/main/install.sh | bash
 ```
 
-或者用 Docker：
+装完直接用：
+
+```bash
+jcproxy serve        # 启动
+jcproxy uninstall    # 卸载（彻底清除数据加 --purge --yes）
+```
+
+> 默认装到 `/usr/local/bin`（需要时会用 sudo）。可用 `INSTALL_DIR=~/.local/bin` 改安装目录，`VERSION=v0.6.0` 指定版本。目前支持 macOS (Apple Silicon) 和 Linux (amd64)。
+
+### 方式二：手动下载二进制
+
+去 [Releases](https://github.com/vibe-coding-labs/JoyCodeProxy/releases) 下载对应平台的文件，命令行直接运行。前端已打包进二进制，无需解压。
+
+**macOS (Apple Silicon)**
+
+```bash
+chmod +x joycode-proxy-darwin-arm64
+./joycode-proxy-darwin-arm64 serve
+```
+
+> macOS 从浏览器下载的二进制会被打上隔离属性，首次运行可能被 Gatekeeper 拦下（提示"无法验证开发者"或"已损坏"）。执行 `xattr -d com.apple.quarantine joycode-proxy-darwin-arm64` 解除隔离即可，或在「系统设置 → 隐私与安全性」里点「仍要打开」。
+
+**Linux (amd64)**
+
+```bash
+chmod +x joycode-proxy-linux-amd64
+./joycode-proxy-linux-amd64 serve
+```
+
+> 手动下载的文件名是 `joycode-proxy-<平台>`，可以 `mv` 成 `jcproxy` 放进 PATH，方便直接敲 `jcproxy` 使用。下文命令统一以 `jcproxy` 为例。
+
+### 方式三：自己构建
+
+需要 Go 1.25+ 和 Node.js 18+。前端会自动嵌入二进制，构建产物同样是单文件。
+
+```bash
+# 1. 构建前端（产物会嵌入到 Go 二进制里）
+cd web && npm install && npm run build && cd ..
+
+# 2. 构建后端
+go build -o jcproxy ./cmd/JoyCodeProxy/
+```
+
+### 方式四：Docker
 
 ```bash
 docker build -t joycode-proxy .
 docker run -p 34891:34891 joycode-proxy
 ```
 
-> **构建时连不上 Alpine 源?** 如果 `docker build` 卡在 `apk add` 并报 `ca-certificates`/`gcc`/`musl-dev` "no such package"，根因通常是网络连不上官方源 `dl-cdn.alpinelinux.org`（国内常见）。用 `ALPINE_MIRROR` 构建参数切到国内镜像即可：
+> **构建时连不上 Alpine 源？** 如果 `docker build` 卡在 `apk add` 并报 `ca-certificates`/`gcc`/`musl-dev` "no such package"，根因通常是网络连不上官方源 `dl-cdn.alpinelinux.org`（国内常见）。用 `ALPINE_MIRROR` 构建参数切到国内镜像即可：
 >
 > ```bash
 > docker build \
@@ -100,43 +139,46 @@ docker run -p 34891:34891 joycode-proxy
 
 ### 启动
 
+前台运行，日志直接打在终端，`Ctrl+C` 停止：
+
 ```bash
-./joycode_proxy_bin serve
+jcproxy serve
 ```
 
 默认监听 `0.0.0.0:34891`。macOS 首次启动会自动从本地已登录的凭据读取 ptKey/userId，不需要手动配——会按顺序尝试 **JoyCode VS Code 插件**（`Code/User/globalStorage/state.vscdb`）和 **JoyCoder 桌面 IDE**（`JoyCode/User/globalStorage/state.vscdb`），谁登录用谁。
 
 > 默认请求"方言"已对齐 **VS Code 插件 + 京东 ERP 登录**环境（`loginType=ERP`、`tenant=JD`、`client=VS Code`、`source-type=joycoder-plugin`、UA=`node`）。如需切换到 JoyCoder 桌面 IDE 方言，打开 Dashboard → 设置 → 上游方言，实时修改即可生效，无需重启。
 
-### 后台设置
+### 后台运行
 
-打开 `http://localhost:34891` → 设置页面，可实时修改以下配置：
+关掉终端也要一直跑，有两种方式。
 
-**模型配置**：默认模型、默认最大输出 Token
+**守护进程**（`daemon`）—— 后台运行，进程崩溃时自动重启，无需系统权限：
 
-**连接优化**：最大重试次数、请求超时、最大连接数
+```bash
+jcproxy daemon start      # 启动（可加 -p 指定端口）
+jcproxy daemon status     # 查看运行状态
+jcproxy daemon logs       # 查看日志（最后 N 行）
+jcproxy daemon restart    # 重启
+jcproxy daemon stop       # 停止
+```
 
-**日志与监控**：启用请求日志、日志保留天数
+**系统服务**（`service`）—— 注册为系统服务，除了崩溃自动重启，还支持**开机自启**。macOS 用 launchd、Linux 用 systemd，自动适配：
 
-**上游方言**（影响发送给 JoyCode 后端的请求头和 body）：
+```bash
+jcproxy service install    # 安装并启动（可加 -p 指定端口）
+jcproxy service status     # 查看服务状态
+jcproxy service uninstall  # 停止并移除服务
+```
 
-| 设置项 | 默认值 | 作用 |
-|--------|--------|------|
-| 登录类型 (loginType) | `ERP` | `loginType` 请求头（凭据自带的值优先） |
-| 来源类型 (source-type) | `joycoder-plugin` | `source-type` 请求头 |
-| 客户端标识 (client) | `VS Code` | body 里的 `client` 字段 |
-| 客户端版本 (clientVersion) | `3.8.63` | body 里的 `clientVersion` 字段 |
-| User-Agent | `node` | `User-Agent` 请求头 |
-| 租户 (tenant) | `JD` | body 里的 `tenant`（凭据自带的值优先） |
+> `daemon` 适合临时后台跑；`service install` 适合装在自己机器上长期使用，重启电脑后会自动拉起。两者选其一即可，不要同时开。
 
-JoyCoder 桌面 IDE 用户只需把方言改成：`loginType=N_PIN_PC`、`source-type=joycoder-ide`、`client=JoyCode`、`clientVersion=2.7.5`、`tenant=JOYCODE`。
+### 卸载
 
-凭据源（覆盖自动探测的路径，仅限部署级别使用）：
-
-| 变量 | 作用 |
-|------|------|
-| `JOYCODE_STATE_DB` | 显式指定 JoyCoder 桌面 IDE 的 `state.vscdb` 路径 |
-| `JOYCODE_VSCODE_STATE_DB` | 显式指定 JoyCode VS Code 插件所在的 `state.vscdb` 路径 |
+```bash
+jcproxy uninstall                 # 停止服务 + 删除二进制（保留账号数据）
+jcproxy uninstall --purge --yes   # 连同 ~/.joycode-proxy 数据一起彻底清除
+```
 
 ### 接到 Claude Code
 

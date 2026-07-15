@@ -14,10 +14,10 @@ var resetPasswordCmd = &cobra.Command{
 	Long:    "重置 Dashboard 管理界面的 root 用户密码。如果忘记密码，可以用这个命令重新设置。",
 	GroupID: "core",
 	Example: `  # 交互式重置密码
-  joycode-proxy reset-password
+  jcproxy reset-password
 
   # 直接指定新密码
-  joycode-proxy reset-password -p my_new_password`,
+  jcproxy reset-password -p my_new_password`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		s, err := store.Open("")
 		if err != nil {

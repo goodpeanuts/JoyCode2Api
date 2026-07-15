@@ -15,10 +15,10 @@ var configCmd = &cobra.Command{
 	Short:   "显示当前配置信息",
 	Long:    "显示已解析的凭据来源、默认设置和服务安装状态。",
 	GroupID: "query",
-	Example: `  joycode-proxy config
+	Example: `  jcproxy config
 
   # 查看指定凭据的配置
-  joycode-proxy -k <ptkey> -u <userid> config`,
+  jcproxy -k <ptkey> -u <userid> config`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Println("JoyCode Proxy Configuration")
 		fmt.Println("============================")

@@ -19,13 +19,13 @@ var chatCmd = &cobra.Command{
 	Long:    "通过 JoyCode API 发送一条聊天消息并返回响应。",
 	GroupID: "core",
 	Example: `  # 发送简单消息
-  joycode-proxy chat "你好"
+  jcproxy chat "你好"
 
   # 指定模型
-  joycode-proxy chat -m GLM-5.1 "写一个排序算法"
+  jcproxy chat -m GLM-5.1 "写一个排序算法"
 
   # 流式输出
-  joycode-proxy chat -s "解释量子计算"`,
+  jcproxy chat -s "解释量子计算"`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := resolveClient()

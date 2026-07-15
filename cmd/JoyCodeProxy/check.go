@@ -17,10 +17,10 @@ var checkCmd = &cobra.Command{
 	Long:    "向本地代理发送健康检查请求，验证服务是否正常运行。",
 	GroupID: "core",
 	Example: `  # 检查默认端口
-  joycode-proxy check
+  jcproxy check
 
   # 检查指定端口
-  joycode-proxy check -p 8080`,
+  jcproxy check -p 8080`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		url := fmt.Sprintf("http://localhost:%d/health", checkPort)
 		client := &http.Client{Timeout: 5 * time.Second}
@@ -31,8 +31,8 @@ var checkCmd = &cobra.Command{
 			fmt.Printf("  Address:  localhost:%d\n", checkPort)
 			fmt.Printf("  Error:    %s\n", err)
 			fmt.Println()
-			fmt.Println("  Start the proxy with: joycode-proxy serve")
-			fmt.Println("  Or install as service: joycode-proxy service install")
+			fmt.Println("  Start the proxy with: jcproxy serve")
+			fmt.Println("  Or install as service: jcproxy service install")
 			return nil
 		}
 		defer resp.Body.Close()

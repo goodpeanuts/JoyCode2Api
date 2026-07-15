@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            asset: joycode-proxy-darwin-arm64
+          - os: ubuntu-latest
+            asset: joycode-proxy-linux-amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build frontend
+        working-directory: web
+        run: |
+          npm install
+          npm run build
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME}" \
+            -o "${{ matrix.asset }}" ./cmd/JoyCodeProxy/
+          chmod +x "${{ matrix.asset }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## 一键安装（推荐）
+
+            macOS / Linux 一条命令装好，安装为全局命令 `jcproxy`：
+
+            ```
+            curl -fsSL https://raw.githubusercontent.com/vibe-coding-labs/JoyCodeProxy/main/install.sh | bash
+            ```
+
+            装完直接 `jcproxy serve` 启动，`jcproxy uninstall` 卸载。
+
+            ## 手动下载
+
+            或下载下方对应平台的二进制文件，命令行直接运行：
+
+            **macOS (Apple Silicon)**
+            ```
+            chmod +x joycode-proxy-darwin-arm64
+            ./joycode-proxy-darwin-arm64 serve
+            ```
+            > 若被 Gatekeeper 拦下（提示"无法验证"或"已损坏"），执行 `xattr -d com.apple.quarantine joycode-proxy-darwin-arm64` 解除隔离即可。
+
+            **Linux (amd64)**
+            ```
+            chmod +x joycode-proxy-linux-amd64
+            ./joycode-proxy-linux-amd64 serve
+            ```
+
+            > 可以把下载的文件 `mv` 成 `jcproxy` 放进 PATH，方便直接敲 `jcproxy` 使用。
+
+            默认监听 `0.0.0.0:34891`，浏览器打开该地址进入控制台。后台常驻可用 `daemon start`（崩溃自动重启）或 `service install`（开机自启）。

@@ -46,16 +46,16 @@ var serveCmd = &cobra.Command{
 	Long:    "启动 OpenAI/Anthropic 兼容的 API 代理服务器，将请求转换为 JoyCode API 格式。",
 	GroupID: "core",
 	Example: `  # 默认启动（0.0.0.0:34891）
-  joycode-proxy serve
+  jcproxy serve
 
   # 指定端口
-  joycode-proxy serve -p 8080
+  jcproxy serve -p 8080
 
   # 启用调试日志
-  joycode-proxy -v serve
+  jcproxy -v serve
 
   # 跳过凭据验证（用于测试）
-  joycode-proxy serve --skip-validation`,
+  jcproxy serve --skip-validation`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if os.Getenv("_JOYCODE_DAEMON_CHILD") == "1" {
 			runAsDaemonChild()
