@@ -105,19 +105,26 @@ func newShortID() string {
 // Otherwise fall back to the account's default model, then the global default.
 // knownModels is the dynamic model list (from refresher), falling back to joycode.Models if empty.
 func ResolveModel(model string, accountDefault string, systemDefault string, knownModels []string) string {
+	resolved, _ := ResolveModelMatch(model, accountDefault, systemDefault, knownModels)
+	return resolved
+}
+
+// ResolveModelMatch resolves model against the known list (exact, then unique
+// prefix) and reports whether the match was exact. On no match it applies the
+// fallback chain (account default -> system default -> DefaultModel), reported
+// as exact.
+func ResolveModelMatch(model string, accountDefault string, systemDefault string, knownModels []string) (resolved string, exact bool) {
 	if len(knownModels) == 0 {
 		knownModels = joycode.Models
 	}
-	for _, m := range knownModels {
-		if m == model {
-			return model
-		}
+	if matched, isExact := joycode.MatchModel(model, knownModels); matched != "" {
+		return matched, isExact
 	}
 	if accountDefault != "" {
-		return accountDefault
+		return accountDefault, true
 	}
 	if systemDefault != "" {
-		return systemDefault
+		return systemDefault, true
 	}
-	return joycode.DefaultModel
+	return joycode.DefaultModel, true
 }

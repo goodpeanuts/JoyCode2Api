@@ -177,22 +177,29 @@ func TranslateResponse(jcResp map[string]interface{}, reqModel string) *MessageR
 }
 
 func resolveModel(model string, accountDefault string, systemDefault string, knownModels ...string) string {
+	resolved, _ := resolveModelMatch(model, accountDefault, systemDefault, knownModels...)
+	return resolved
+}
+
+// resolveModelMatch resolves model against the known list (exact, then unique
+// prefix) and reports whether the match was exact. On no match it applies the
+// fallback chain (account default -> system default -> DefaultModel), which is
+// always reported as exact (no prefix substitution to surface in logs).
+func resolveModelMatch(model string, accountDefault string, systemDefault string, knownModels ...string) (resolved string, exact bool) {
 	models := knownModels
 	if len(models) == 0 {
 		models = joycode.Models
 	}
-	for _, m := range models {
-		if m == model {
-			return model
-		}
+	if matched, isExact := joycode.MatchModel(model, models); matched != "" {
+		return matched, isExact
 	}
 	if accountDefault != "" {
-		return accountDefault
+		return accountDefault, true
 	}
 	if systemDefault != "" {
-		return systemDefault
+		return systemDefault, true
 	}
-	return joycode.DefaultModel
+	return joycode.DefaultModel, true
 }
 
 // contentBlock represents a single content block in Anthropic format.

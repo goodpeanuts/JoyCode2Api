@@ -25,9 +25,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if s.store != nil {
 		systemDefault = s.store.GetSetting("default_model")
 	}
-	model := ResolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault, s.knownModels())
-		store.SetModel(r, model)
-		jcBody := TranslateRequest(&req)
+	model, exact := ResolveModelMatch(req.Model, store.GetAccountDefaultModel(r), systemDefault, s.knownModels())
+	display := joycode.DisplayModel(req.Model, model, exact)
+	store.SetModel(r, display)
+	slog.Info("openai request", "model", req.Model, "resolved", display, "stream", req.Stream)
+	req.Model = model
+	jcBody := TranslateRequest(&req)
 	client := s.getClient(r)
 	if req.Stream {
 		s.handleStreamChat(w, r, client, jcBody, model)

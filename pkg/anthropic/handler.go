@@ -97,9 +97,10 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		if h.store != nil {
 			systemDefault = h.store.GetSetting("default_model")
 		}
-		resolved := resolveModel(req.Model, accountDefault, systemDefault, h.knownModels()...)
-		store.SetModel(r, resolved)
-		reqLog(r).Info("anthropic request", "model", req.Model, "resolved", resolved, "stream", req.Stream, "max_tokens", req.MaxTokens, "messages", len(req.Messages), "tools", len(req.Tools))
+		resolved, exact := resolveModelMatch(req.Model, accountDefault, systemDefault, h.knownModels()...)
+		display := joycode.DisplayModel(req.Model, resolved, exact)
+		store.SetModel(r, display)
+		reqLog(r).Info("anthropic request", "model", req.Model, "resolved", display, "stream", req.Stream, "max_tokens", req.MaxTokens, "messages", len(req.Messages), "tools", len(req.Tools))
 
 	client := h.getClient(r)
 
