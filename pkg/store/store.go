@@ -265,8 +265,8 @@ func (s *Store) migrate() error {
 			pt_key TEXT NOT NULL,
 			is_default INTEGER DEFAULT 0,
 			default_model TEXT DEFAULT '',
-			created_at TEXT DEFAULT (datetime('now', 'localtime')),
-			updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+			created_at TEXT DEFAULT (datetime('now')),
+			updated_at TEXT DEFAULT (datetime('now')),
 			credential_refreshed_at TEXT DEFAULT '',
 			credential_valid INTEGER DEFAULT -1,
 			display_order INTEGER DEFAULT 0
@@ -274,7 +274,7 @@ func (s *Store) migrate() error {
 		CREATE TABLE IF NOT EXISTS settings (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL,
-			updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+			updated_at TEXT DEFAULT (datetime('now'))
 		);
 		CREATE TABLE IF NOT EXISTS request_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -284,7 +284,7 @@ func (s *Store) migrate() error {
 			stream INTEGER DEFAULT 0,
 			status_code INTEGER,
 			latency_ms INTEGER,
-			created_at TEXT DEFAULT (datetime('now', 'localtime'))
+			created_at TEXT DEFAULT (datetime('now'))
 		);
 	`)
 	if err != nil {
@@ -295,7 +295,7 @@ func (s *Store) migrate() error {
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS remote_configs (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL,
-		updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+		updated_at TEXT DEFAULT (datetime('now'))
 	)`)
 
 	// Migration: add error_message column to request_logs
@@ -318,8 +318,8 @@ func (s *Store) migrate() error {
 	// Migration: migrate old schema (api_key as PK) to new schema (user_id as PK)
 	s.migrateUserIDAsPK()
 
-	// Migration: fix historical UTC timestamps to localtime
-	s.migrateUTCTimestamps()
+	// Migration: convert historical local-wall-clock timestamps to UTC storage
+	s.migrateToUTC()
 
 	// Migration: initialize display_order for existing accounts
 	s.migrateDisplayOrder()
@@ -354,8 +354,8 @@ func (s *Store) migrateUserIDAsPK() {
 			pt_key TEXT NOT NULL,
 			is_default INTEGER DEFAULT 0,
 			default_model TEXT DEFAULT '',
-			created_at TEXT DEFAULT (datetime('now', 'localtime')),
-			updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+			created_at TEXT DEFAULT (datetime('now')),
+			updated_at TEXT DEFAULT (datetime('now')),
 			credential_refreshed_at TEXT DEFAULT '',
 			credential_valid INTEGER DEFAULT -1,
 			display_order INTEGER DEFAULT 0
@@ -436,27 +436,59 @@ func (s *Store) migrateUserIDAsPK() {
 	slog.Info("store: accounts table migrated to user_id PK successfully")
 }
 
-// migrateUTCTimestamps converts existing UTC timestamps to localtime.
-// Uses SQLite to check if the newest record's time is behind local now by more than
-// 30 minutes -- if so, the data was stored in UTC and needs +offset hours.
-func (s *Store) migrateUTCTimestamps() {
+// migrateToUTC converts historical timestamps that were stored as server
+// local wall-clock (the old `datetime('now','localtime')` scheme) into UTC,
+// so all rows share a single absolute time base that the dashboard can render
+// in any configured display timezone.
+//
+// Runs exactly once, guarded by the settings flag `schema_tz_utc_migrated`.
+// The flag write and the UPDATEs share one transaction, so a crash mid-way
+// never leaves rows half-shifted or the flag set without the shift applied.
+func (s *Store) migrateToUTC() {
+	if s.GetSetting("schema_tz_utc_migrated") == "1" {
+		return
+	}
+
 	_, offset := time.Now().Zone()
 	hours := offset / 3600
-	if hours <= 0 {
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		slog.Error("store: migrateToUTC begin tx failed", "error", err)
 		return
 	}
-	// Check if the newest request_log is behind localtime by roughly the offset
-	var count int
-	s.db.QueryRow(fmt.Sprintf(
-		"SELECT COUNT(*) FROM request_logs WHERE created_at < datetime('now', 'localtime') - INTERVAL IS NOT SUPPORTED AND created_at < datetime('now', 'localtime', '-30 minutes')",
-	)).Scan(&count)
-	if count == 0 {
+	defer tx.Rollback()
+
+	// hours == 0 (server already on UTC): nothing to shift, just set the flag.
+	if hours != 0 {
+		// Subtract the server offset to recover the UTC instant from the stored
+		// local wall-clock string. datetime(col, '-N hours') accepts negative N.
+		shift := fmt.Sprintf("%+d hours", -hours)
+		stmts := []string{
+			"UPDATE request_logs SET created_at = datetime(created_at, '" + shift + "')",
+			"UPDATE accounts SET created_at = datetime(created_at, '" + shift + "'), updated_at = datetime(updated_at, '" + shift + "')",
+			"UPDATE settings SET updated_at = datetime(updated_at, '" + shift + "')",
+			"UPDATE remote_configs SET updated_at = datetime(updated_at, '" + shift + "')",
+		}
+		for _, q := range stmts {
+			if _, err := tx.Exec(q); err != nil {
+				slog.Error("store: migrateToUTC update failed", "query", q, "error", err)
+				return
+			}
+		}
+	}
+
+	if _, err := tx.Exec(
+		"INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('schema_tz_utc_migrated', '1', datetime('now'))",
+	); err != nil {
+		slog.Error("store: migrateToUTC set flag failed", "error", err)
 		return
 	}
-	s.db.Exec(fmt.Sprintf("UPDATE request_logs SET created_at = datetime(created_at, '+%d hours') WHERE created_at < datetime('now', 'localtime', '-30 minutes')", hours))
-	s.db.Exec(fmt.Sprintf("UPDATE accounts SET created_at = datetime(created_at, '+%d hours') WHERE created_at < datetime('now', 'localtime', '-30 minutes')", hours))
-	s.db.Exec(fmt.Sprintf("UPDATE settings SET updated_at = datetime(updated_at, '+%d hours') WHERE updated_at < datetime('now', 'localtime', '-30 minutes')", hours))
-	slog.Info("migrated UTC timestamps to localtime", "offset_hours", hours, "records_fixed", count)
+	if err := tx.Commit(); err != nil {
+		slog.Error("store: migrateToUTC commit failed", "error", err)
+		return
+	}
+	slog.Info("store: migrated local-wall-clock timestamps to UTC", "offset_hours", hours)
 }
 
 func (s *Store) migrateDisplayOrder() {
@@ -567,7 +599,7 @@ func (s *Store) AddAccount(userID, ptKey, nickname string, isDefault bool, defau
 			return fmt.Errorf("encrypt pt_key: %w", err)
 		}
 		_, err = s.db.Exec(
-			"UPDATE accounts SET pt_key = ?, nickname = CASE WHEN nickname = '' OR nickname IS NULL THEN ? ELSE nickname END, login_type = ?, tenant = ?, color_base_url = ?, master_base_url = ?, org_full_name = ?, updated_at = datetime('now', 'localtime') WHERE user_id = ?",
+			"UPDATE accounts SET pt_key = ?, nickname = CASE WHEN nickname = '' OR nickname IS NULL THEN ? ELSE nickname END, login_type = ?, tenant = ?, color_base_url = ?, master_base_url = ?, org_full_name = ?, updated_at = datetime('now') WHERE user_id = ?",
 			encPtKey, nickname, cLoginType, cTenant, cColorBaseURL, cMasterBaseURL, cOrgFullName, userID,
 		)
 		if err != nil {
@@ -598,7 +630,7 @@ func (s *Store) AddAccount(userID, ptKey, nickname string, isDefault bool, defau
 						return fmt.Errorf("encrypt pt_key: %w", encErr)
 					}
 					_, err = s.db.Exec(
-						"UPDATE accounts SET user_id = ?, pt_key = ?, nickname = CASE WHEN nickname = '' OR nickname IS NULL THEN ? ELSE nickname END, login_type = ?, tenant = ?, color_base_url = ?, master_base_url = ?, org_full_name = ?, updated_at = datetime('now', 'localtime') WHERE user_id = ?",
+						"UPDATE accounts SET user_id = ?, pt_key = ?, nickname = CASE WHEN nickname = '' OR nickname IS NULL THEN ? ELSE nickname END, login_type = ?, tenant = ?, color_base_url = ?, master_base_url = ?, org_full_name = ?, updated_at = datetime('now') WHERE user_id = ?",
 						userID, encPtKey, nickname, cLoginType, cTenant, cColorBaseURL, cMasterBaseURL, cOrgFullName, existingUserID,
 					)
 					if err != nil {
@@ -700,13 +732,17 @@ func (s *Store) FillAccountStats(accounts []AccountInfo) {
 	}
 	allRows.Close()
 
-	// Today stats: single GROUP BY query
+	// Today stats: single GROUP BY query, bucketed in the display timezone
+	todayFilter := "date(created_at) = date('now')"
+	if mod := s.tzOffsetModifier(); mod != "" {
+		todayFilter = "date(created_at, '" + mod + "') = date('now', '" + mod + "')"
+	}
 	todayRows, err := s.db.Query(`
 		SELECT api_key,
 			COUNT(*) as req_count,
 			COALESCE(SUM(input_tokens + output_tokens), 0) as token_sum
 		FROM request_logs
-		WHERE date(created_at) = date('now', 'localtime')
+		WHERE ` + todayFilter + `
 		GROUP BY api_key`)
 	if err != nil {
 		return
@@ -787,7 +823,7 @@ func (s *Store) GetAccountByToken(token string) (*Account, error) {
 
 func (s *Store) RenewToken(userID string) (string, error) {
 	token := generateToken()
-	_, err := s.db.Exec("UPDATE accounts SET api_token = ?, updated_at = datetime('now', 'localtime') WHERE user_id = ?", token, userID)
+	_, err := s.db.Exec("UPDATE accounts SET api_token = ?, updated_at = datetime('now') WHERE user_id = ?", token, userID)
 	if err != nil {
 		slog.Error("store: renew token failed", "user_id", userID, "error", err)
 		return "", err
@@ -863,7 +899,7 @@ func (s *Store) UpdatePtKey(userID, ptKey string) error {
 		return fmt.Errorf("encrypt pt_key: %w", err)
 	}
 	result, err := s.db.Exec(
-		"UPDATE accounts SET pt_key = ?, updated_at = datetime('now', 'localtime'), credential_refreshed_at = datetime('now', 'localtime') WHERE user_id = ?",
+		"UPDATE accounts SET pt_key = ?, updated_at = datetime('now'), credential_refreshed_at = datetime('now') WHERE user_id = ?",
 		encPtKey, userID,
 	)
 	if err != nil {
@@ -882,7 +918,7 @@ func (s *Store) UpdatePtKey(userID, ptKey string) error {
 // that was validated but did not need a pt_key refresh.
 func (s *Store) UpdateCredentialRefreshedAt(userID string) {
 	s.db.Exec(
-		"UPDATE accounts SET credential_refreshed_at = datetime('now', 'localtime') WHERE user_id = ?",
+		"UPDATE accounts SET credential_refreshed_at = datetime('now') WHERE user_id = ?",
 		userID,
 	)
 }
@@ -970,7 +1006,7 @@ func (s *Store) UpdateRemark(userID, remark string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	result, err := s.db.Exec("UPDATE accounts SET remark = ?, updated_at = datetime('now', 'localtime') WHERE user_id = ?", remark, userID)
+	result, err := s.db.Exec("UPDATE accounts SET remark = ?, updated_at = datetime('now') WHERE user_id = ?", remark, userID)
 	if err != nil {
 		slog.Error("store: update remark failed", "user_id", userID, "error", err)
 		return err
@@ -993,11 +1029,11 @@ func (s *Store) SetDefault(userID string) error {
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec("UPDATE accounts SET is_default = 0, updated_at = datetime('now', 'localtime')"); err != nil {
+	if _, err := tx.Exec("UPDATE accounts SET is_default = 0, updated_at = datetime('now')"); err != nil {
 		slog.Error("store: set default clear failed", "error", err)
 		return err
 	}
-	if _, err := tx.Exec("UPDATE accounts SET is_default = 1, updated_at = datetime('now', 'localtime') WHERE user_id = ?", userID); err != nil {
+	if _, err := tx.Exec("UPDATE accounts SET is_default = 1, updated_at = datetime('now') WHERE user_id = ?", userID); err != nil {
 		slog.Error("store: set default assign failed", "user_id", userID, "error", err)
 		return err
 	}
@@ -1006,7 +1042,7 @@ func (s *Store) SetDefault(userID string) error {
 
 func (s *Store) UpdateAccountModel(userID, model string) error {
 	_, err := s.db.Exec(
-		"UPDATE accounts SET default_model = ?, updated_at = datetime('now', 'localtime') WHERE user_id = ?",
+		"UPDATE accounts SET default_model = ?, updated_at = datetime('now') WHERE user_id = ?",
 		model, userID,
 	)
 	if err != nil {
@@ -1022,7 +1058,7 @@ func (s *Store) UpdateAccountCreds(userID string, creds *AccountCreds) error {
 		return nil
 	}
 	_, err := s.db.Exec(
-		"UPDATE accounts SET login_type = CASE WHEN ? != '' THEN ? ELSE login_type END, tenant = CASE WHEN ? != '' THEN ? ELSE tenant END, color_base_url = CASE WHEN ? != '' THEN ? ELSE color_base_url END, master_base_url = CASE WHEN ? != '' THEN ? ELSE master_base_url END, org_full_name = CASE WHEN ? != '' THEN ? ELSE org_full_name END, updated_at = datetime('now', 'localtime') WHERE user_id = ?",
+		"UPDATE accounts SET login_type = CASE WHEN ? != '' THEN ? ELSE login_type END, tenant = CASE WHEN ? != '' THEN ? ELSE tenant END, color_base_url = CASE WHEN ? != '' THEN ? ELSE color_base_url END, master_base_url = CASE WHEN ? != '' THEN ? ELSE master_base_url END, org_full_name = CASE WHEN ? != '' THEN ? ELSE org_full_name END, updated_at = datetime('now') WHERE user_id = ?",
 		creds.LoginType, creds.LoginType,
 		creds.Tenant, creds.Tenant,
 		creds.ColorBaseURL, creds.ColorBaseURL,
@@ -1078,7 +1114,7 @@ func (s *Store) GetIntSetting(key string, defaultVal int) int {
 
 func (s *Store) SetSetting(key, value string) error {
 	_, err := s.db.Exec(
-		"INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now', 'localtime'))",
+		"INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
 		key, value,
 	)
 	if err != nil {
@@ -1097,7 +1133,7 @@ func (s *Store) SetSettings(settings map[string]string) error {
 
 	for k, v := range settings {
 		if _, err := tx.Exec(
-			"INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now', 'localtime'))",
+			"INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
 			k, v,
 		); err != nil {
 			slog.Error("store: set settings exec failed", "key", k, "error", err)
@@ -1123,7 +1159,7 @@ func (s *Store) GetRemoteConfig(key string) string {
 // SetRemoteConfig stores a remote config JSON blob by key.
 func (s *Store) SetRemoteConfig(key, value string) error {
 	_, err := s.db.Exec(
-		"INSERT OR REPLACE INTO remote_configs (key, value, updated_at) VALUES (?, ?, datetime('now', 'localtime'))",
+		"INSERT OR REPLACE INTO remote_configs (key, value, updated_at) VALUES (?, ?, datetime('now'))",
 		key, value,
 	)
 	if err != nil {
@@ -1149,13 +1185,43 @@ func (s *Store) LogRequest(userID, model, endpoint string, stream bool, statusCo
 	return err
 }
 
+// tzOffsetModifier returns a SQLite datetime modifier (e.g. "+8 hours",
+// "-5 hours", or "" for UTC) derived from the configured `timezone` setting,
+// used to bucket/compare UTC-stored timestamps in the display timezone.
+//
+// Known limitation: this is a fixed offset sampled at "now", so around a DST
+// transition the hourly buckets can be off by one hour. For zones without DST
+// (e.g. Asia/Shanghai, always +8) it is exact. Empty setting or a zone that
+// fails to load falls back to UTC ("").
+func (s *Store) tzOffsetModifier() string {
+	name := s.GetSetting("timezone")
+	if name == "" || name == "UTC" {
+		return ""
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return ""
+	}
+	_, offset := time.Now().In(loc).Zone()
+	if offset == 0 {
+		return ""
+	}
+	// SQLite accepts fractional hours poorly; express in minutes for zones
+	// like Asia/Kolkata (+5:30) or Asia/Kathmandu (+5:45).
+	minutes := offset / 60
+	return fmt.Sprintf("%+d minutes", minutes)
+}
+
 func (s *Store) GetStats() (*Stats, error) {
 	stats := &Stats{}
-	// created_at is stored as local time (DEFAULT datetime('now','localtime')),
-	// so compare its date directly against today's local date — applying
-	// 'localtime' to created_at would convert it a second time and drop rows
-	// near the day boundary for non-UTC servers.
-	tf := "date(created_at) = date('now', 'localtime')"
+	// created_at is stored as UTC (DEFAULT datetime('now')). Shift both it and
+	// 'now' by the configured display-timezone offset so "today" is bucketed in
+	// the user's timezone, not UTC.
+	mod := s.tzOffsetModifier()
+	tf := "date(created_at) = date('now')"
+	if mod != "" {
+		tf = "date(created_at, '" + mod + "') = date('now', '" + mod + "')"
+	}
 
 	err := s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf).Scan(&stats.TotalRequests)
 	if err != nil {
@@ -1226,14 +1292,21 @@ func (s *Store) GetAllTimeTotals() (*AllTimeTotals, error) {
 }
 
 func (s *Store) GetHourlyStats() ([]HourlyData, error) {
+	// Bucket key is formatted in the display timezone (shift the UTC-stored
+	// created_at by the offset); the 24h window is a rolling duration compared
+	// UTC-to-UTC, so it needs no offset.
+	bucket := "strftime('%m-%d %H', created_at)"
+	if mod := s.tzOffsetModifier(); mod != "" {
+		bucket = "strftime('%m-%d %H', created_at, '" + mod + "')"
+	}
 	rows, err := s.db.Query(`
-		SELECT strftime('%m-%d %H', created_at) as hour,
+		SELECT ` + bucket + ` as hour,
 			COUNT(*) as count,
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
 			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END)
 		FROM request_logs
-		WHERE created_at >= datetime('now', 'localtime', '-24 hours')
+		WHERE created_at >= datetime('now', '-24 hours')
 		GROUP BY hour ORDER BY hour`)
 	if err != nil {
 		return nil, err
@@ -1253,7 +1326,8 @@ func (s *Store) GetHourlyStats() ([]HourlyData, error) {
 
 func (s *Store) GetAccountStats(userID string) (*AccountStats, error) {
 	as := &AccountStats{UserID: userID}
-	tf := "created_at >= datetime('now', 'localtime', '-24 hours')"
+	// Rolling 24h window: created_at is UTC, compared against UTC now, no tz needed.
+	tf := "created_at >= datetime('now', '-24 hours')"
 
 	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.TotalRequests)
 	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.AvgLatencyMs)
@@ -1297,9 +1371,13 @@ func (s *Store) GetAccountStats(userID string) (*AccountStats, error) {
 	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400", userID).Scan(&allTime.ErrorCount)
 	as.AllTime = allTime
 
-	// Hourly breakdown for last 24 hours
+	// Hourly breakdown for last 24 hours, bucketed in the display timezone
+	hourBucket := "strftime('%m-%d %H', created_at)"
+	if mod := s.tzOffsetModifier(); mod != "" {
+		hourBucket = "strftime('%m-%d %H', created_at, '" + mod + "')"
+	}
 	hRows, err := s.db.Query(`
-		SELECT strftime('%m-%d %H', created_at) as hour,
+		SELECT `+hourBucket+` as hour,
 			COUNT(*) as count,
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
@@ -1411,7 +1489,7 @@ func (s *Store) CleanupOldLogs(days int) (int64, error) {
 		return 0, nil
 	}
 	result, err := s.db.Exec(
-		"DELETE FROM request_logs WHERE created_at < datetime('now', 'localtime', '-' || ? || ' days')",
+		"DELETE FROM request_logs WHERE created_at < datetime('now', '-' || ? || ' days')",
 		days,
 	)
 	if err != nil {

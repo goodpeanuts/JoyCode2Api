@@ -17,6 +17,7 @@ import {
 import { useParams, useNavigate } from 'react-router-dom';
 import { api, accountDisplayName } from '../api';
 import type { Account, AccountStats, ModelInfo, RequestLog } from '../api';
+import { useTimezone, formatInTimezone, hourKeyInTimezone } from '../hooks/useTimezone';
 import SvgClaudeCode from '../components/ClaudeCodeIcon';
 import SvgCodex from '../components/CodexIcon';
 import CommandTooltip from '../components/CommandTooltip';
@@ -56,12 +57,9 @@ const statusTag = (code: number) => {
   return <Tag color="error">{code}</Tag>;
 };
 
-const formatTime = (t: string) => {
+const formatTime = (t: string, tz: string) => {
   if (!t) return '-';
-  const d = new Date(t + (t.includes('Z') || t.includes('+') ? '' : 'Z'));
-  if (isNaN(d.getTime())) return t;
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return formatInTimezone(t, tz);
 };
 
 const formatLatency = (ms: number) => {
@@ -116,6 +114,7 @@ const copyCmd = async (text: string, label: string) => {
 const AccountDetail: React.FC = () => {
   const { userId } = useParams<{ userId: string }>();
   const navigate = useNavigate();
+  const tz = useTimezone();
   const [account, setAccount] = useState<Account | null>(null);
   const [stats, setStats] = useState<AccountStats | null>(null);
   const [logs, setLogs] = useState<RequestLog[]>([]);
@@ -219,7 +218,7 @@ const AccountDetail: React.FC = () => {
       width: 170,
       render: (t: string) => (
         <Typography.Text style={{ fontSize: 12, fontFamily: 'monospace' }}>
-          {formatTime(t)}
+          {formatTime(t, tz)}
         </Typography.Text>
       ),
     },
@@ -620,10 +619,10 @@ const AccountDetail: React.FC = () => {
         const hourlyChartData: { label: string; count: number; input_tokens: number; output_tokens: number; errors: number }[] = [];
         for (let i = 23; i >= 0; i--) {
           const d = new Date(now.getTime() - i * 3600000);
-          const key = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}`;
+          const key = hourKeyInTimezone(d, tz);
           const entry = hMap.get(key);
           hourlyChartData.push({
-            label: `${String(d.getHours()).padStart(2, '0')}:00`,
+            label: `${key.slice(-2)}:00`,
             count: entry?.count ?? 0,
             input_tokens: entry?.input_tokens ?? 0,
             output_tokens: entry?.output_tokens ?? 0,
@@ -777,7 +776,7 @@ const AccountDetail: React.FC = () => {
                   <Typography.Text type="secondary">请求 ID</Typography.Text>
                   <Typography.Text code>{record.id}</Typography.Text>
                   <Typography.Text type="secondary">时间</Typography.Text>
-                  <Typography.Text>{formatTime(record.created_at)}</Typography.Text>
+                  <Typography.Text>{formatTime(record.created_at, tz)}</Typography.Text>
                   <Typography.Text type="secondary">端点</Typography.Text>
                   <Typography.Text code>{record.endpoint}</Typography.Text>
                   <Typography.Text type="secondary">模型</Typography.Text>

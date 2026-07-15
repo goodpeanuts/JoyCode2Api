@@ -98,6 +98,24 @@ const FIELD_GROUPS = [
         suffix: '天',
         tag: '已生效',
       },
+      {
+        key: 'timezone',
+        label: '显示时区',
+        tooltip: '日志时间与小时统计图按此时区显示。日志本身以 UTC 存储，切换时区只影响展示。首次打开会自动识别浏览器所在时区',
+        placeholder: 'Asia/Shanghai',
+        type: 'select' as const,
+        tag: '已生效',
+        options: [
+          { label: 'Asia/Shanghai — 中国标准时间 (UTC+8)', value: 'Asia/Shanghai' },
+          { label: 'Asia/Tokyo — 日本 (UTC+9)', value: 'Asia/Tokyo' },
+          { label: 'Asia/Kolkata — 印度 (UTC+5:30)', value: 'Asia/Kolkata' },
+          { label: 'UTC — 协调世界时', value: 'UTC' },
+          { label: 'Europe/London — 英国', value: 'Europe/London' },
+          { label: 'Europe/Paris — 中欧', value: 'Europe/Paris' },
+          { label: 'America/New_York — 美东', value: 'America/New_York' },
+          { label: 'America/Los_Angeles — 美西', value: 'America/Los_Angeles' },
+        ],
+      },
     ],
   },
   {
@@ -191,6 +209,18 @@ const SettingsPage: React.FC = () => {
       for (const key of switchKeys) {
         normalized[key] = data[key] !== 'false';
       }
+
+      // First-run timezone auto-detect: if the backend has no timezone set,
+      // seed it from the browser's IANA zone and persist it so log/stats times
+      // render in the user's local timezone by default.
+      if (!data.timezone) {
+        const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (detected) {
+          normalized.timezone = detected;
+          api.updateSettings({ timezone: detected }).catch(() => { /* best-effort seed */ });
+        }
+      }
+
       form.setFieldsValue(normalized);
     } catch (e: unknown) {
       message.error(e instanceof Error ? e.message : '加载设置失败');
@@ -331,11 +361,20 @@ const SettingsPage: React.FC = () => {
             description: m.description,
           }));
         }
+        // For timezone, make sure a browser-detected value not in the preset
+        // list still shows up as a selectable option.
+        if (field.key === 'timezone') {
+          const cur = form.getFieldValue('timezone');
+          if (cur && !selectOptions.some(o => o.value === cur)) {
+            selectOptions = [{ label: cur, value: cur }, ...selectOptions];
+          }
+        }
         return (
           <Form.Item key={field.key} name={field.key} label={label}>
             <Select
               placeholder={field.placeholder}
               options={selectOptions}
+              showSearch={field.key === 'timezone'}
               optionRender={(option) => {
                 const desc = (option.data as { description?: string })?.description;
                 return desc ? (

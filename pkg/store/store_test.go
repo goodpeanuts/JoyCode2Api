@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func openTestStore(t *testing.T) *Store {
@@ -312,6 +313,9 @@ func TestGetSettingsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get settings: %v", err)
 	}
+	// migrate() seeds the internal schema_tz_utc_migrated flag; ignore it and
+	// assert there are no user-facing settings on a fresh store.
+	delete(settings, "schema_tz_utc_migrated")
 	if len(settings) != 0 {
 		t.Errorf("expected empty settings, got %v", settings)
 	}
@@ -344,8 +348,10 @@ func TestSetSettingsBatch(t *testing.T) {
 	}
 
 	settings, _ := s.GetSettings()
-	if len(settings) != 2 {
-		t.Errorf("len = %d, want 2", len(settings))
+	// Note: migrate() seeds the schema_tz_utc_migrated flag, so assert the
+	// keys we set are present rather than an exact count.
+	if settings["a"] != "1" || settings["b"] != "2" {
+		t.Errorf("settings = %+v, want a=1 b=2", settings)
 	}
 }
 
@@ -499,19 +505,19 @@ func TestEncryptionKeyReused(t *testing.T) {
 	}
 }
 
-// TestGetHourlyStatsUsesLocalHour guards against the double-localtime bug:
-// created_at is stored as local time, so the hourly bucket must be
-// strftime(created_at) — applying 'localtime' again shifts the hour label by
-// the UTC offset (visible on non-UTC servers; a no-op exactly at UTC).
-func TestGetHourlyStatsUsesLocalHour(t *testing.T) {
+// TestGetHourlyStatsBucketsInUTC verifies that with no timezone setting,
+// created_at is stored as UTC and the hourly bucket is formatted in UTC
+// (strftime with no offset modifier). This is the default display base.
+func TestGetHourlyStatsBucketsInUTC(t *testing.T) {
 	s := openTestStore(t)
 	if err := s.LogRequest("k1", "GLM-5.1", "/v1/chat", true, 200, 100, "", 1, 2); err != nil {
 		t.Fatalf("log request: %v", err)
 	}
 
-	// Expected bucket: the stored (local) timestamp formatted as-is.
+	// Expected bucket: UTC now, since created_at is stored as UTC and no
+	// timezone setting is configured (offset modifier is empty).
 	var want string
-	if err := s.db.QueryRow("SELECT strftime('%m-%d %H', 'now', 'localtime')").Scan(&want); err != nil {
+	if err := s.db.QueryRow("SELECT strftime('%m-%d %H', 'now')").Scan(&want); err != nil {
 		t.Fatalf("compute expected hour: %v", err)
 	}
 
@@ -523,9 +529,94 @@ func TestGetHourlyStatsUsesLocalHour(t *testing.T) {
 		t.Fatalf("hourly rows = %d, want 1: %+v", len(hourly), hourly)
 	}
 	if hourly[0].Hour != want {
-		t.Errorf("hour = %q, want %q (double localtime conversion?)", hourly[0].Hour, want)
+		t.Errorf("hour = %q, want %q (UTC bucket)", hourly[0].Hour, want)
 	}
 	if hourly[0].Count != 1 {
 		t.Errorf("count = %d, want 1", hourly[0].Count)
 	}
+}
+
+// TestGetHourlyStatsRespectsTimezone verifies the bucket shifts when a
+// timezone is configured.
+func TestGetHourlyStatsRespectsTimezone(t *testing.T) {
+	s := openTestStore(t)
+	s.SetSetting("timezone", "Asia/Shanghai")
+	if err := s.LogRequest("k1", "GLM-5.1", "/v1/chat", true, 200, 100, "", 1, 2); err != nil {
+		t.Fatalf("log request: %v", err)
+	}
+
+	// Expected bucket: UTC now shifted +8 hours (Asia/Shanghai, no DST).
+	var want string
+	if err := s.db.QueryRow("SELECT strftime('%m-%d %H', 'now', '+480 minutes')").Scan(&want); err != nil {
+		t.Fatalf("compute expected hour: %v", err)
+	}
+
+	hourly, err := s.GetHourlyStats()
+	if err != nil {
+		t.Fatalf("hourly stats: %v", err)
+	}
+	if len(hourly) != 1 {
+		t.Fatalf("hourly rows = %d, want 1: %+v", len(hourly), hourly)
+	}
+	if hourly[0].Hour != want {
+		t.Errorf("hour = %q, want %q (Asia/Shanghai bucket)", hourly[0].Hour, want)
+	}
+}
+
+// TestMigrateToUTCIdempotent verifies that a row stored as server-local
+// wall-clock is shifted to UTC exactly once, even across multiple opens.
+func TestMigrateToUTCIdempotent(t *testing.T) {
+	_, offset := time.Now().Zone()
+	if offset == 0 {
+		t.Skip("server is on UTC; migration is a no-op shift")
+	}
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	s := openAt(t, dbPath)
+	// Simulate a legacy row written before the flag existed: clear the flag
+	// and insert a known local-wall-clock timestamp.
+	if _, err := s.db.Exec("DELETE FROM settings WHERE key = 'schema_tz_utc_migrated'"); err != nil {
+		t.Fatalf("clear flag: %v", err)
+	}
+	if _, err := s.db.Exec(
+		"INSERT INTO request_logs (api_key, model, endpoint, stream, status_code, latency_ms, created_at) VALUES ('k','m','/e',0,200,10,'2026-01-01 12:00:00')",
+	); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	s.Close()
+
+	readTS := func(st *Store) string {
+		var ts string
+		if err := st.db.QueryRow("SELECT created_at FROM request_logs WHERE api_key='k'").Scan(&ts); err != nil {
+			t.Fatalf("read ts: %v", err)
+		}
+		return ts
+	}
+
+	// First reopen: migration runs, shifts local→UTC once.
+	s1 := openAt(t, dbPath)
+	after1 := readTS(s1)
+	if after1 == "2026-01-01 12:00:00" {
+		t.Fatalf("expected timestamp to shift on first migration, got %q", after1)
+	}
+	s1.Close()
+
+	// Second reopen: flag is set, no further shift.
+	s2 := openAt(t, dbPath)
+	after2 := readTS(s2)
+	s2.Close()
+	if after1 != after2 {
+		t.Errorf("migration not idempotent: after1=%q after2=%q", after1, after2)
+	}
+}
+
+func openAt(t *testing.T, dbPath string) *Store {
+	t.Helper()
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	return s
 }

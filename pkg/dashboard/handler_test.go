@@ -340,6 +340,8 @@ func TestHandleGetSettingsEmpty(t *testing.T) {
 	if !ok {
 		t.Fatalf("settings is not a map: %T", m["settings"])
 	}
+	// migrate() seeds the internal schema_tz_utc_migrated flag; ignore it.
+	delete(settings, "schema_tz_utc_migrated")
 	if len(settings) != 0 {
 		t.Errorf("settings len = %d, want 0", len(settings))
 	}

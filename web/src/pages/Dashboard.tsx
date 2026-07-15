@@ -19,6 +19,7 @@ import {
 } from 'recharts';
 import { api, accountDisplayName } from '../api';
 import type { Stats, Account } from '../api';
+import { useTimezone, hourKeyInTimezone } from '../hooks/useTimezone';
 
 const COLORS = ['#00b578', '#36cfc9', '#73d13d', '#95de64', '#1890ff', '#722ed1', '#13c2c2', '#fa8c16'];
 
@@ -41,6 +42,7 @@ const Dashboard: React.FC = () => {
   const [stats, setStats] = useState<Stats | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
+  const tz = useTimezone();
 
   const fetchData = async () => {
     setLoading(true);
@@ -95,8 +97,8 @@ const Dashboard: React.FC = () => {
   const hourlyChartData: { hour: string; label: string; requests: number; tokens: number; errors: number }[] = [];
   for (let i = 23; i >= 0; i--) {
     const d = new Date(now.getTime() - i * 3600000);
-    const key = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}`;
-    const label = `${String(d.getHours()).padStart(2, '0')}:00`;
+    const key = hourKeyInTimezone(d, tz);
+    const label = `${key.slice(-2)}:00`;
     const entry = hourlyMap.get(key);
     hourlyChartData.push({
       hour: key,
