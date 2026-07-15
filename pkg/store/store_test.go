@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -313,9 +314,10 @@ func TestGetSettingsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get settings: %v", err)
 	}
-	// migrate() seeds the internal schema_tz_utc_migrated flag; ignore it and
-	// assert there are no user-facing settings on a fresh store.
+	// migrate() seeds internal schema_* flags; ignore them and assert there are
+	// no user-facing settings on a fresh store.
 	delete(settings, "schema_tz_utc_migrated")
+	delete(settings, "schema_future_ts_corrected")
 	if len(settings) != 0 {
 		t.Errorf("expected empty settings, got %v", settings)
 	}
@@ -619,4 +621,124 @@ func openAt(t *testing.T, dbPath string) *Store {
 		t.Fatalf("open store: %v", err)
 	}
 	return s
+}
+
+// colDefault returns the SQL default expression for a column.
+func colDefault(t *testing.T, s *Store, table, col string) string {
+	t.Helper()
+	var dflt string
+	if err := s.db.QueryRow(
+		"SELECT COALESCE(dflt_value,'') FROM pragma_table_info(?) WHERE name=?", table, col,
+	).Scan(&dflt); err != nil {
+		t.Fatalf("read default for %s.%s: %v", table, col, err)
+	}
+	return dflt
+}
+
+// TestMigrateColumnDefaultsToUTC verifies that a table carrying the legacy
+// datetime('now','localtime') column default is rebuilt so the default becomes
+// UTC datetime('now'), and that a subsequent default-based insert lands as UTC.
+func TestMigrateColumnDefaultsToUTC(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	// First open creates the schema (already UTC). Reintroduce the legacy
+	// localtime default to simulate a pre-UTC database, then reopen.
+	s := openAt(t, dbPath)
+	if _, err := s.db.Exec(`
+		CREATE TABLE request_logs_legacy (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			api_key TEXT, model TEXT, endpoint TEXT,
+			stream INTEGER DEFAULT 0, status_code INTEGER, latency_ms INTEGER,
+			created_at TEXT DEFAULT (datetime('now', 'localtime')),
+			error_message TEXT DEFAULT '', input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0
+		);
+		INSERT INTO request_logs_legacy (api_key, model, endpoint, created_at)
+			SELECT api_key, model, endpoint, created_at FROM request_logs;
+		DROP TABLE request_logs;
+		ALTER TABLE request_logs_legacy RENAME TO request_logs;
+	`); err != nil {
+		t.Fatalf("install legacy schema: %v", err)
+	}
+	// Clear the guard flags so the timestamp-correction migration re-runs too.
+	s.db.Exec("DELETE FROM settings WHERE key IN ('schema_future_ts_corrected')")
+	if got := colDefault(t, s, "request_logs", "created_at"); !strings.Contains(got, "localtime") {
+		t.Fatalf("precondition failed: expected localtime default, got %q", got)
+	}
+	s.Close()
+
+	// Reopen: migrateColumnDefaultsToUTC rebuilds the table with a UTC default.
+	s2 := openAt(t, dbPath)
+	defer s2.Close()
+
+	dflt := colDefault(t, s2, "request_logs", "created_at")
+	if strings.Contains(dflt, "localtime") {
+		t.Errorf("created_at default still localtime after migration: %q", dflt)
+	}
+	if !strings.Contains(dflt, "datetime('now')") {
+		t.Errorf("created_at default not UTC after migration: %q", dflt)
+	}
+
+	// A default-based insert must now store UTC (matches datetime('now')).
+	if err := s2.LogRequest("k", "m", "/e", false, 200, 1, "", 0, 0); err != nil {
+		t.Fatalf("log request: %v", err)
+	}
+	var stored, utcNow string
+	s2.db.QueryRow("SELECT created_at FROM request_logs WHERE api_key='k'").Scan(&stored)
+	s2.db.QueryRow("SELECT datetime('now')").Scan(&utcNow)
+	// Compare to the minute to avoid a rare second-boundary flake.
+	if stored[:16] != utcNow[:16] {
+		t.Errorf("new row stored %q, want UTC ~%q", stored, utcNow)
+	}
+}
+
+// TestMigrateFutureTimestampsToUTC verifies that rows sitting in the future
+// (local wall-clock written through a stale default after the UTC migration)
+// are shifted back to UTC, and that the correction runs only once.
+func TestMigrateFutureTimestampsToUTC(t *testing.T) {
+	_, offset := time.Now().Zone()
+	if offset == 0 {
+		t.Skip("server is on UTC; future-timestamp correction is a no-op shift")
+	}
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	s := openAt(t, dbPath)
+	// A polluted row: local wall-clock stored as if UTC => sits in the future.
+	// Use datetime('now','localtime') which, on a non-UTC server, is ahead of
+	// (offset>0) or behind (offset<0) datetime('now').
+	if offset > 0 {
+		if _, err := s.db.Exec(
+			"INSERT INTO request_logs (api_key, model, endpoint, created_at) VALUES ('future','m','/e', datetime('now','localtime'))",
+		); err != nil {
+			t.Fatalf("insert future row: %v", err)
+		}
+	} else {
+		t.Skip("server offset is negative; future-in-time simulation not applicable")
+	}
+	// A legitimate past row must be left untouched.
+	if _, err := s.db.Exec(
+		"INSERT INTO request_logs (api_key, model, endpoint, created_at) VALUES ('past','m','/e','2020-01-01 00:00:00')",
+	); err != nil {
+		t.Fatalf("insert past row: %v", err)
+	}
+	// Clear the guard so reopening re-runs the correction.
+	s.db.Exec("DELETE FROM settings WHERE key = 'schema_future_ts_corrected'")
+	s.Close()
+
+	s2 := openAt(t, dbPath)
+	defer s2.Close()
+
+	var future, utcNow, past string
+	s2.db.QueryRow("SELECT created_at FROM request_logs WHERE api_key='future'").Scan(&future)
+	s2.db.QueryRow("SELECT datetime('now')").Scan(&utcNow)
+	s2.db.QueryRow("SELECT created_at FROM request_logs WHERE api_key='past'").Scan(&past)
+
+	if future > utcNow {
+		t.Errorf("future row not corrected: %q still ahead of now %q", future, utcNow)
+	}
+	if past != "2020-01-01 00:00:00" {
+		t.Errorf("past row should be untouched, got %q", past)
+	}
 }

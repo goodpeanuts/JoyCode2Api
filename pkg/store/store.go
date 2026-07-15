@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -321,6 +322,17 @@ func (s *Store) migrate() error {
 	// Migration: convert historical local-wall-clock timestamps to UTC storage
 	s.migrateToUTC()
 
+	// Migration: rewrite column defaults that still use datetime('now','localtime')
+	// to UTC datetime('now'). CREATE TABLE IF NOT EXISTS never updates an existing
+	// table's column defaults, so tables created before the UTC switch keep writing
+	// server-local wall-clock on inserts that rely on the default.
+	s.migrateColumnDefaultsToUTC()
+
+	// Migration: correct rows that were written as local wall-clock AFTER the
+	// one-shot migrateToUTC ran (via the stale localtime column default). Those
+	// rows read as future instants once the rest of the base is UTC.
+	s.migrateFutureTimestampsToUTC()
+
 	// Migration: initialize display_order for existing accounts
 	s.migrateDisplayOrder()
 
@@ -489,6 +501,170 @@ func (s *Store) migrateToUTC() {
 		return
 	}
 	slog.Info("store: migrated local-wall-clock timestamps to UTC", "offset_hours", hours)
+}
+
+// tzTables lists tables whose timestamp column defaults must be UTC.
+var tzTables = []string{"request_logs", "accounts", "settings", "remote_configs"}
+
+// migrateColumnDefaultsToUTC rewrites any column default of the form
+// datetime('now','localtime') to datetime('now') (UTC) on the tracked tables.
+//
+// SQLite cannot alter a column default in place, so each affected table is
+// rebuilt: the table's own CREATE SQL is fetched from sqlite_master, the
+// localtime modifier is stripped, and the table is recreated and repopulated
+// inside a transaction. Tables already free of the localtime default are left
+// untouched, which also makes this idempotent.
+func (s *Store) migrateColumnDefaultsToUTC() {
+	for _, table := range tzTables {
+		var createSQL string
+		err := s.db.QueryRow(
+			"SELECT sql FROM sqlite_master WHERE type='table' AND name=?", table,
+		).Scan(&createSQL)
+		if err != nil {
+			// Table may not exist yet on a fresh db; nothing to fix.
+			continue
+		}
+		if !strings.Contains(createSQL, "localtime") {
+			continue
+		}
+		if err := s.rebuildTableWithUTCDefaults(table, createSQL); err != nil {
+			slog.Error("store: migrateColumnDefaultsToUTC failed", "table", table, "error", err)
+		}
+	}
+}
+
+// rebuildTableWithUTCDefaults recreates table using createSQL with the
+// datetime(...,'localtime') defaults rewritten to UTC, copying all existing
+// rows across by their shared column names.
+func (s *Store) rebuildTableWithUTCDefaults(table, createSQL string) error {
+	// Normalize both spacing variants of the localtime modifier to plain UTC.
+	fixedSQL := createSQL
+	for _, from := range []string{"datetime('now', 'localtime')", "datetime('now','localtime')"} {
+		fixedSQL = strings.ReplaceAll(fixedSQL, from, "datetime('now')")
+	}
+	// Recreate under a temporary name, then swap. The stored SQL may reference a
+	// different original name than the current table (e.g. after a prior ALTER
+	// TABLE RENAME), so rewrite whatever identifier follows "CREATE TABLE" up to
+	// the opening parenthesis rather than assuming it equals table.
+	tmp := table + "_utc_tmp"
+	openParen := strings.Index(fixedSQL, "(")
+	const createKw = "CREATE TABLE "
+	kwIdx := strings.Index(fixedSQL, createKw)
+	if kwIdx < 0 || openParen < 0 || openParen < kwIdx {
+		return fmt.Errorf("could not parse CREATE statement for %s", table)
+	}
+	newSQL := createKw + tmp + " " + fixedSQL[openParen:]
+
+	cols, err := s.tableColumns(table)
+	if err != nil {
+		return err
+	}
+	colList := strings.Join(cols, ", ")
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(newSQL); err != nil {
+		return fmt.Errorf("create %s: %w", tmp, err)
+	}
+	if _, err := tx.Exec(fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s", tmp, colList, colList, table)); err != nil {
+		return fmt.Errorf("copy into %s: %w", tmp, err)
+	}
+	if _, err := tx.Exec("DROP TABLE " + table); err != nil {
+		return fmt.Errorf("drop %s: %w", table, err)
+	}
+	if _, err := tx.Exec(fmt.Sprintf("ALTER TABLE %s RENAME TO %s", tmp, table)); err != nil {
+		return fmt.Errorf("rename %s: %w", tmp, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	slog.Info("store: rebuilt table with UTC column defaults", "table", table)
+	return nil
+}
+
+// tableColumns returns the column names of table in schema order.
+func (s *Store) tableColumns(table string) ([]string, error) {
+	rows, err := s.db.Query("SELECT name FROM pragma_table_info(?)", table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		cols = append(cols, name)
+	}
+	if len(cols) == 0 {
+		return nil, fmt.Errorf("no columns for table %s", table)
+	}
+	return cols, nil
+}
+
+// migrateFutureTimestampsToUTC corrects rows whose timestamps were written as
+// server-local wall-clock through the stale localtime column default AFTER the
+// one-shot migrateToUTC ran. Because the rest of the base is UTC, those rows
+// sit in the future; each is shifted back by the server's UTC offset.
+//
+// Runs once, guarded by the settings flag `schema_future_ts_corrected`. A
+// server already on UTC has no local/UTC skew, so it only sets the flag.
+func (s *Store) migrateFutureTimestampsToUTC() {
+	if s.GetSetting("schema_future_ts_corrected") == "1" {
+		return
+	}
+
+	_, offset := time.Now().Zone()
+	hours := offset / 3600
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		slog.Error("store: migrateFutureTimestampsToUTC begin tx failed", "error", err)
+		return
+	}
+	defer tx.Rollback()
+
+	if hours != 0 {
+		shift := fmt.Sprintf("%+d hours", -hours)
+		// A small buffer past 'now' avoids touching a row legitimately written
+		// microseconds ago whose second-resolution string rounds just ahead.
+		const buffer = "+2 minutes"
+		type target struct{ table, col string }
+		targets := []target{
+			{"request_logs", "created_at"},
+			{"accounts", "created_at"},
+			{"accounts", "updated_at"},
+			{"settings", "updated_at"},
+			{"remote_configs", "updated_at"},
+		}
+		for _, tg := range targets {
+			q := fmt.Sprintf(
+				"UPDATE %s SET %s = datetime(%s, '%s') WHERE %s > datetime('now', '%s')",
+				tg.table, tg.col, tg.col, shift, tg.col, buffer,
+			)
+			if _, err := tx.Exec(q); err != nil {
+				slog.Error("store: migrateFutureTimestampsToUTC update failed", "query", q, "error", err)
+				return
+			}
+		}
+	}
+
+	if _, err := tx.Exec(
+		"INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('schema_future_ts_corrected', '1', datetime('now'))",
+	); err != nil {
+		slog.Error("store: migrateFutureTimestampsToUTC set flag failed", "error", err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		slog.Error("store: migrateFutureTimestampsToUTC commit failed", "error", err)
+		return
+	}
+	slog.Info("store: corrected future (local-wall-clock) timestamps to UTC", "offset_hours", hours)
 }
 
 func (s *Store) migrateDisplayOrder() {
