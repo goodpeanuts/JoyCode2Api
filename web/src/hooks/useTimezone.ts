@@ -56,14 +56,16 @@ export const formatInTimezone = (t: string, tz: string): string => {
 };
 
 /** Build the "%m-%d %H" bucket key for a Date in the given tz, matching the
- *  backend strftime('%m-%d %H', created_at, '<offset>') keys. */
+ *  backend's DST-aware Go bucketing (created_at.In(loc).Format("01-02 15")). */
 export const hourKeyInTimezone = (d: Date, tz: string): string => {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: tz,
     month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false,
   }).formatToParts(d);
   const get = (type: string) => parts.find(p => p.type === type)?.value ?? '00';
+  // hourCycle:h23 is implied by hour12:false, but some engines still emit '24'
+  // at midnight; normalize to '00' (same wall-clock instant, same date parts).
   let hour = get('hour');
-  if (hour === '24') hour = '00'; // Intl can emit '24' at midnight
+  if (hour === '24') hour = '00';
   return `${get('month')}-${get('day')} ${hour}`;
 };

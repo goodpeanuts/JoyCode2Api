@@ -20,6 +20,7 @@ import dayjs, { type Dayjs } from 'dayjs';
 import { api, accountDisplayName } from '../api';
 import type { Account, AccountStats, ModelInfo, RequestLog } from '../api';
 import { useTimezone, formatInTimezone, hourKeyInTimezone } from '../hooks/useTimezone';
+import { formatTokens as fmtTokens, latencyColor, formatPercent } from '../utils/format';
 import SvgClaudeCode from '../components/ClaudeCodeIcon';
 import SvgCodex from '../components/CodexIcon';
 import CommandTooltip from '../components/CommandTooltip';
@@ -40,18 +41,6 @@ const FALLBACK_MODELS: ModelInfo[] = [
 const isClaudeModel = (model?: string) => model === 'Claude-Opus-4.7';
 
 const PIE_COLORS = ['#00b578', '#36cfc9', '#73d13d', '#95de64', '#1890ff', '#13c2c2', '#eb2f96', '#fa8c16'];
-
-const latencyColor = (ms: number) => {
-  if (ms < 500) return '#52c41a';
-  if (ms < 1500) return '#faad14';
-  return '#ff4d4f';
-};
-
-const fmtTokens = (n: number) => {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return n.toLocaleString();
-};
 
 const statusTag = (code: number) => {
   if (code >= 200 && code < 300) return <Tag color="success">{code}</Tag>;
@@ -569,7 +558,7 @@ const AccountDetail: React.FC = () => {
                     valueStyle={{ fontSize: 18, color: '#52c41a' }}
                   />
                   <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                    占比 {stats.total_requests > 0 ? Math.round((stats.success_count / stats.total_requests) * 100) : 100}%
+                    占比 {stats.total_requests > 0 ? formatPercent(stats.success_count, stats.total_requests) : '100%'}
                   </Typography.Text>
                 </Col>
                 <Col span={12}>
@@ -580,7 +569,7 @@ const AccountDetail: React.FC = () => {
                     valueStyle={{ fontSize: 18, color: stats.error_count > 0 ? '#ff4d4f' : '#52c41a' }}
                   />
                   <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                    占比 {stats.total_requests > 0 ? Math.round((stats.error_count / stats.total_requests) * 100) : 0}%
+                    占比 {formatPercent(stats.error_count, stats.total_requests)}
                   </Typography.Text>
                 </Col>
                 <Col span={24}>
@@ -594,7 +583,7 @@ const AccountDetail: React.FC = () => {
                         valueStyle={{ fontSize: 16 }}
                       />
                       <Tag color="blue" style={{ marginTop: 2 }}>
-                        {stats.total_requests > 0 ? Math.round((stats.stream_count / stats.total_requests) * 100) : 0}%
+                        {formatPercent(stats.stream_count, stats.total_requests)}
                       </Tag>
                     </Col>
                     <Col span={12}>

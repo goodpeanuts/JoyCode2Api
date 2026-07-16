@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1394,6 +1395,87 @@ func (s *Store) tzOffsetModifier() string {
 	return fmt.Sprintf("%+d minutes", minutes)
 }
 
+// displayLocation returns the configured display timezone as a *time.Location,
+// falling back to UTC when unset or unresolvable. Unlike tzOffsetModifier this
+// is DST-aware: each instant is converted with its own offset, matching the
+// frontend's Intl-based hour bucketing.
+func (s *Store) displayLocation() *time.Location {
+	name := s.GetSetting("timezone")
+	if name == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil || loc == nil {
+		return time.UTC
+	}
+	return loc
+}
+
+// hourlyInWindow returns per-hour buckets over the rolling last 24 hours for
+// rows matching extraWhere (which may reference api_key via the args). Buckets
+// are keyed "%m-%d %H" in the display timezone, computed in Go so DST
+// transitions align with the frontend's per-instant bucketing.
+func (s *Store) hourlyInWindow(extraWhere string, args ...interface{}) []HourlyData {
+	loc := s.displayLocation()
+	where := "created_at >= datetime('now', '-24 hours')"
+	if extraWhere != "" {
+		where = extraWhere + " AND " + where
+	}
+	rows, err := s.db.Query(`
+		SELECT created_at, input_tokens, output_tokens, status_code
+		FROM request_logs WHERE `+where, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	type agg struct {
+		key                    string
+		hourStart              time.Time // truncated-to-hour instant, for chronological sort
+		count, in, out, errors int
+	}
+	buckets := map[string]*agg{}
+	for rows.Next() {
+		var createdAt string
+		var in, out, status int
+		if rows.Scan(&createdAt, &in, &out, &status) != nil {
+			continue
+		}
+		t, err := time.Parse("2006-01-02 15:04:05", createdAt)
+		if err != nil {
+			continue
+		}
+		local := t.UTC().In(loc)
+		key := local.Format("01-02 15")
+		b := buckets[key]
+		if b == nil {
+			b = &agg{key: key, hourStart: local.Truncate(time.Hour)}
+			buckets[key] = b
+		}
+		b.count++
+		b.in += in
+		b.out += out
+		if status >= 400 {
+			b.errors++
+		}
+	}
+	aggs := make([]*agg, 0, len(buckets))
+	for _, b := range buckets {
+		aggs = append(aggs, b)
+	}
+	// Sort by the actual instant so buckets stay chronological across a month
+	// boundary (12-31 → 01-01), which a lexical sort of the "MM-DD HH" key would
+	// reverse.
+	sort.Slice(aggs, func(i, j int) bool { return aggs[i].hourStart.Before(aggs[j].hourStart) })
+	result := make([]HourlyData, 0, len(aggs))
+	for _, b := range aggs {
+		result = append(result, HourlyData{
+			Hour: b.key, Count: b.count, InputTokens: b.in, OutputTokens: b.out, Errors: b.errors,
+		})
+	}
+	return result
+}
+
 func (s *Store) GetStats() (*Stats, error) {
 	stats := &Stats{}
 	// created_at is stored as UTC (DEFAULT datetime('now')). Shift both it and
@@ -1474,52 +1556,31 @@ func (s *Store) GetAllTimeTotals() (*AllTimeTotals, error) {
 }
 
 func (s *Store) GetHourlyStats() ([]HourlyData, error) {
-	// Bucket key is formatted in the display timezone (shift the UTC-stored
-	// created_at by the offset); the 24h window is a rolling duration compared
-	// UTC-to-UTC, so it needs no offset.
-	bucket := "strftime('%m-%d %H', created_at)"
-	if mod := s.tzOffsetModifier(); mod != "" {
-		bucket = "strftime('%m-%d %H', created_at, '" + mod + "')"
-	}
-	rows, err := s.db.Query(`
-		SELECT ` + bucket + ` as hour,
-			COUNT(*) as count,
-			COALESCE(SUM(input_tokens), 0),
-			COALESCE(SUM(output_tokens), 0),
-			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END)
-		FROM request_logs
-		WHERE created_at >= datetime('now', '-24 hours')
-		GROUP BY hour ORDER BY hour`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []HourlyData
-	for rows.Next() {
-		var h HourlyData
-		if err := rows.Scan(&h.Hour, &h.Count, &h.InputTokens, &h.OutputTokens, &h.Errors); err != nil {
-			return nil, err
-		}
-		result = append(result, h)
-	}
-	return result, rows.Err()
+	// Bucketed in the display timezone over a rolling 24h window, DST-aware
+	// (see hourlyInWindow) so keys align with the frontend's per-instant buckets.
+	return s.hourlyInWindow(""), nil
 }
 
 func (s *Store) GetAccountStats(userID string) (*AccountStats, error) {
 	as := &AccountStats{UserID: userID}
-	// Rolling 24h window: created_at is UTC, compared against UTC now, no tz needed.
-	tf := "created_at >= datetime('now', '-24 hours')"
+	// "Today" scalar metrics use the display-timezone calendar day, matching
+	// GetStats and FillAccountStats so the same account reconciles across the
+	// overview, the account list, and this detail page.
+	mod := s.tzOffsetModifier()
+	todayTF := "date(created_at) = date('now')"
+	if mod != "" {
+		todayTF = "date(created_at, '" + mod + "') = date('now', '" + mod + "')"
+	}
 
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.TotalRequests)
-	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.AvgLatencyMs)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND stream = 1 AND "+tf, userID).Scan(&as.StreamCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400 AND "+tf, userID).Scan(&as.ErrorCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code < 400 AND "+tf, userID).Scan(&as.SuccessCount)
-	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.TotalInputTk)
-	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.TotalOutputTk)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND "+todayTF, userID).Scan(&as.TotalRequests)
+	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE api_key = ? AND "+todayTF, userID).Scan(&as.AvgLatencyMs)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND stream = 1 AND "+todayTF, userID).Scan(&as.StreamCount)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400 AND "+todayTF, userID).Scan(&as.ErrorCount)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code < 400 AND "+todayTF, userID).Scan(&as.SuccessCount)
+	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE api_key = ? AND "+todayTF, userID).Scan(&as.TotalInputTk)
+	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE api_key = ? AND "+todayTF, userID).Scan(&as.TotalOutputTk)
 
-	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs WHERE api_key = ? AND "+tf+" GROUP BY model ORDER BY cnt DESC", userID)
+	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs WHERE api_key = ? AND "+todayTF+" GROUP BY model ORDER BY cnt DESC", userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1532,7 +1593,7 @@ func (s *Store) GetAccountStats(userID string) (*AccountStats, error) {
 		as.ByModel = append(as.ByModel, mc)
 	}
 
-	rows2, err := s.db.Query("SELECT endpoint, COUNT(*) as cnt FROM request_logs WHERE api_key = ? AND "+tf+" GROUP BY endpoint ORDER BY cnt DESC", userID)
+	rows2, err := s.db.Query("SELECT endpoint, COUNT(*) as cnt FROM request_logs WHERE api_key = ? AND "+todayTF+" GROUP BY endpoint ORDER BY cnt DESC", userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1553,29 +1614,10 @@ func (s *Store) GetAccountStats(userID string) (*AccountStats, error) {
 	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400", userID).Scan(&allTime.ErrorCount)
 	as.AllTime = allTime
 
-	// Hourly breakdown for last 24 hours, bucketed in the display timezone
-	hourBucket := "strftime('%m-%d %H', created_at)"
-	if mod := s.tzOffsetModifier(); mod != "" {
-		hourBucket = "strftime('%m-%d %H', created_at, '" + mod + "')"
-	}
-	hRows, err := s.db.Query(`
-		SELECT `+hourBucket+` as hour,
-			COUNT(*) as count,
-			COALESCE(SUM(input_tokens), 0),
-			COALESCE(SUM(output_tokens), 0),
-			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END)
-		FROM request_logs
-		WHERE api_key = ? AND `+tf+`
-		GROUP BY hour ORDER BY hour`, userID)
-	if err == nil {
-		defer hRows.Close()
-		for hRows.Next() {
-			var h HourlyData
-			if hRows.Scan(&h.Hour, &h.Count, &h.InputTokens, &h.OutputTokens, &h.Errors) == nil {
-				as.Hourly = append(as.Hourly, h)
-			}
-		}
-	}
+	// Hourly breakdown for the last 24 hours (rolling window, independent of the
+	// calendar-today scalar metrics above). Feeds the "24 小时趋势" charts.
+	// DST-aware bucketing (see hourlyInWindow) so keys align with the frontend.
+	as.Hourly = s.hourlyInWindow("api_key = ?", userID)
 
 	return as, nil
 }

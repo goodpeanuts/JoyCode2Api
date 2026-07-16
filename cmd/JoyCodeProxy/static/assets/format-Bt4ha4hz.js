@@ -1,0 +1,1 @@
+var e=e=>e>=1e6?(e/1e6).toFixed(2)+`M`:e>=1e3?(e/1e3).toFixed(1)+`K`:e.toLocaleString(),t=e=>e<500?`#52c41a`:e<1500?`#faad14`:`#ff4d4f`,n=(e,t)=>{if(t<=0)return`0%`;let n=e/t*100;return n>0&&n<1?`<1%`:`${Math.round(n)}%`};export{e as n,t as r,n as t};

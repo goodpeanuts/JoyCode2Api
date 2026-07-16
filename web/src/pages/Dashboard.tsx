@@ -20,14 +20,9 @@ import {
 import { api, accountDisplayName } from '../api';
 import type { Stats, Account } from '../api';
 import { useTimezone, hourKeyInTimezone } from '../hooks/useTimezone';
+import { formatTokens as fmt, latencyColor, formatPercent } from '../utils/format';
 
 const COLORS = ['#00b578', '#36cfc9', '#73d13d', '#95de64', '#1890ff', '#722ed1', '#13c2c2', '#fa8c16'];
-
-const fmt = (n: number) => {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return n.toLocaleString();
-};
 
 const fmtLatency = (ms: number) => {
   if (ms < 1000) return `${ms}ms`;
@@ -67,8 +62,6 @@ const Dashboard: React.FC = () => {
 
   const successRate = stats.total_requests > 0
     ? Math.round((stats.success_count / stats.total_requests) * 100) : 100;
-  const errorRate = stats.total_requests > 0
-    ? Math.round((stats.error_count / stats.total_requests) * 100) : 0;
   const streamRate = stats.total_requests > 0
     ? Math.round((stats.stream_count / stats.total_requests) * 100) : 0;
   const totalTokens = stats.total_input_tokens + stats.total_output_tokens;
@@ -246,7 +239,7 @@ const Dashboard: React.FC = () => {
                   prefix={<CheckCircleOutlined />}
                   valueStyle={{ fontSize: 18, color: '#52c41a' }}
                 />
-                <Typography.Text type="secondary" style={{ fontSize: 11 }}>占比 {successRate}%</Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>占比 {formatPercent(stats.success_count, stats.total_requests)}</Typography.Text>
               </Col>
               <Col span={12}>
                 <Statistic
@@ -255,7 +248,7 @@ const Dashboard: React.FC = () => {
                   prefix={<CloseCircleOutlined />}
                   valueStyle={{ fontSize: 18, color: stats.error_count > 0 ? '#ff4d4f' : '#52c41a' }}
                 />
-                <Typography.Text type="secondary" style={{ fontSize: 11 }}>占比 {errorRate}%</Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>占比 {formatPercent(stats.error_count, stats.total_requests)}</Typography.Text>
               </Col>
               <Col span={24}>
                 <Divider style={{ margin: '4px 0 8px' }} />
@@ -326,7 +319,7 @@ const Dashboard: React.FC = () => {
                   title="平均延迟"
                   value={fmtLatency(avgLatency)}
                   prefix={<ThunderboltOutlined />}
-                  valueStyle={{ fontSize: 20, color: avgLatency < 5000 ? '#52c41a' : avgLatency < 15000 ? '#faad14' : '#ff4d4f' }}
+                  valueStyle={{ fontSize: 20, color: latencyColor(avgLatency) }}
                 />
               </Col>
               <Col span={12}>

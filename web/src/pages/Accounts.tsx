@@ -33,6 +33,7 @@ import QRLoginModal from '../components/QRLoginModal';
 import { useNavigate } from 'react-router-dom';
 import { api, accountDisplayName } from '../api';
 import type { Account, ModelInfo } from '../api';
+import { formatTokens as fmtTokens } from '../utils/format';
 
 const isClaudeModel = (model?: string) => model === 'Claude-Opus-4.7';
 
@@ -51,12 +52,6 @@ const maskUserId = (id: string): string => {
   if (!id) return '-';
   if (id.length <= 3) return id[0] + '***';
   return id.slice(0, 2) + '***' + id.slice(-2);
-};
-
-const fmtTokens = (n: number): string => {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return String(n);
 };
 
 const claudeCodeCmd = (apiKey: string, model = 'GLM-5.1') => [
