@@ -34,11 +34,13 @@ const MainLayout: React.FC = () => {
   const [healthStatus, setHealthStatus] = useState<'ok' | 'error'>('ok');
   const [accountCount, setAccountCount] = useState(0);
   const [stars, setStars] = useState<number | null>(null);
+  const [version, setVersion] = useState<string>('');
 
   useEffect(() => {
     api.getHealth().then((h) => {
       setHealthStatus(h.status === 'ok' ? 'ok' : 'error');
       setAccountCount(h.accounts);
+      setVersion(h.version || '');
     }).catch(() => setHealthStatus('error'));
     api.getGitHubStars().then((s) => { if (s > 0) setStars(s); }).catch(() => {});
   }, []);
@@ -56,14 +58,22 @@ const MainLayout: React.FC = () => {
         style={{ background: token.colorBgContainer }}
       >
         <div style={{
-          height: 48,
+          minHeight: 48,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
+          padding: collapsed ? '8px 0' : '8px 12px',
           borderBottom: `1px solid ${token.colorBorderSecondary}`,
         }}>
           <img src="/favicon.ico" alt="JoyCode" style={{ width: 24, height: 24, marginRight: collapsed ? 0 : 8 }} />
-          {!collapsed && <Text strong style={{ fontSize: 15 }}>JoyCode 代理</Text>}
+          {!collapsed && (
+            <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
+              <Text strong style={{ fontSize: 15 }}>JoyCode 代理</Text>
+              {version && (
+                <Text type="secondary" style={{ fontSize: 11 }}>{version}</Text>
+              )}
+            </div>
+          )}
         </div>
         <Menu
           mode="inline"

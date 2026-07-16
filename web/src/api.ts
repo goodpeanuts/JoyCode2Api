@@ -210,7 +210,7 @@ export const api = {
   getSettings: () => request<{ settings: Settings }>('/api/settings').then(r => r.settings),
   updateSettings: (data: Settings) =>
     request<{ ok: boolean }>('/api/settings', { method: 'PUT', body: JSON.stringify(data) }),
-  getHealth: () => request<{ status: string; accounts: number }>('/api/health'),
+  getHealth: () => request<{ status: string; accounts: number; version: string }>('/api/health'),
   updateAccountModel: (userId: string, defaultModel: string) =>
     request<{ ok: boolean }>(`/api/accounts/${encodeURIComponent(userId)}/model`, {
       method: 'PUT',

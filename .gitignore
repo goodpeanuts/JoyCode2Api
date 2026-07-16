@@ -23,6 +23,8 @@ joycode_proxy_linux_*
 joycode-proxy
 joycode-proxy-new
 
+jcproxy
+
 # Dependency directories
 vendor/
 
