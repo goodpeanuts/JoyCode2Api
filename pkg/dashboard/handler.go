@@ -94,7 +94,7 @@ var (
 )
 
 const ghStarsCacheTTL = 1 * time.Hour
-const ghRepo = "vibe-coding-labs/JoyCodeProxy"
+const ghRepo = "goodpeanuts/JoyCode2Api"
 
 func (h *Handler) handleGitHubStars(w http.ResponseWriter, r *http.Request) {
 	setCors(w)
