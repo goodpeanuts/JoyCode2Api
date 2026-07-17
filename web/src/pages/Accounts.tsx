@@ -247,6 +247,7 @@ const Accounts: React.FC = () => {
       message.error(e instanceof Error ? e.message : '验证请求失败');
     } finally {
       setValidating(null);
+      fetchAccounts();
     }
   };
 
