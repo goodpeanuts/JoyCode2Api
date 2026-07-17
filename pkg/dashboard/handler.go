@@ -1158,7 +1158,21 @@ func (h *Handler) validateAccount(w http.ResponseWriter, r *http.Request, apiKey
 		slog.Error("validate account", "api_key", apiKey, "error", err)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"api_key": apiKey, "valid": valid})
+	// Also refresh colorBaseUrl on validate. Failure keeps the old value;
+	// the error is surfaced in the response and recorded per-account.
+	colorBaseURL, colorErr := configref.RefreshAccountColorBaseURL(h.store, account.UserID)
+	colorErrMsg := ""
+	if colorErr != nil {
+		colorErrMsg = colorErr.Error()
+		slog.Warn("validate: colorBaseUrl refresh failed", "api_key", apiKey, "error", colorErr)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"api_key":             apiKey,
+		"valid":               valid,
+		"color_base_url":      colorBaseURL,
+		"color_refresh_error": colorErrMsg,
+	})
 }
 
 func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, apiKey string) {
