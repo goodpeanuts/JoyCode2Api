@@ -38,19 +38,19 @@ type AccountCreds struct {
 }
 
 type Account struct {
-	UserID       string `json:"user_id"`
-	Nickname     string `json:"nickname"`
-	Remark       string `json:"remark"`
-	APIToken     string `json:"api_token"`
-	PtKey        string `json:"-"`
-	IsDefault    bool   `json:"is_default"`
-	DefaultModel string `json:"default_model"`
-	CreatedAt    string `json:"created_at,omitempty"`
-	LoginType    string `json:"login_type"`
-	Tenant       string `json:"tenant"`
-	ColorBaseURL string `json:"color_base_url"`
+	UserID        string `json:"user_id"`
+	Nickname      string `json:"nickname"`
+	Remark        string `json:"remark"`
+	APIToken      string `json:"api_token"`
+	PtKey         string `json:"-"`
+	IsDefault     bool   `json:"is_default"`
+	DefaultModel  string `json:"default_model"`
+	CreatedAt     string `json:"created_at,omitempty"`
+	LoginType     string `json:"login_type"`
+	Tenant        string `json:"tenant"`
+	ColorBaseURL  string `json:"color_base_url"`
 	MasterBaseURL string `json:"master_base_url"`
-	OrgFullName  string `json:"org_full_name"`
+	OrgFullName   string `json:"org_full_name"`
 }
 
 func (a *Account) DisplayName() string {
@@ -64,28 +64,30 @@ func (a *Account) DisplayName() string {
 }
 
 type AccountInfo struct {
-	UserID          string `json:"user_id"`
-	Nickname        string `json:"nickname"`
-	Remark          string `json:"remark"`
-	APIToken        string `json:"api_token"`
-	IsDefault       bool   `json:"is_default"`
-	DefaultModel    string `json:"default_model"`
-	CreatedAt       string `json:"created_at,omitempty"`
-	DisplayOrder    int    `json:"display_order"`
-	ActiveSessions  int64  `json:"active_sessions"`
-	TotalRequests   int    `json:"total_requests"`
-	TodayRequests   int    `json:"today_requests"`
-	TotalTokens     int    `json:"total_tokens"`
-	TodayTokens     int    `json:"today_tokens"`
-	CredentialValid      int    `json:"credential_valid"`               // -1=unknown, 0=expired, 1=valid
+	UserID              string `json:"user_id"`
+	Nickname            string `json:"nickname"`
+	Remark              string `json:"remark"`
+	APIToken            string `json:"api_token"`
+	IsDefault           bool   `json:"is_default"`
+	DefaultModel        string `json:"default_model"`
+	CreatedAt           string `json:"created_at,omitempty"`
+	DisplayOrder        int    `json:"display_order"`
+	ActiveSessions      int64  `json:"active_sessions"`
+	TotalRequests       int    `json:"total_requests"`
+	TodayRequests       int    `json:"today_requests"`
+	TotalTokens         int    `json:"total_tokens"`
+	TodayTokens         int    `json:"today_tokens"`
+	CredentialValid     int    `json:"credential_valid"` // -1=unknown, 0=expired, 1=valid
 	CredentialCheckedAt string `json:"credential_checked_at,omitempty"`
 	CredentialRefreshAt string `json:"credential_refreshed_at,omitempty"`
 	CredentialError     string `json:"credential_error,omitempty"`
-	LoginType     string `json:"login_type"`
-	Tenant        string `json:"tenant"`
-	ColorBaseURL  string `json:"color_base_url"`
-	MasterBaseURL string `json:"master_base_url"`
-	OrgFullName   string `json:"org_full_name"`
+	LoginType           string `json:"login_type"`
+	Tenant              string `json:"tenant"`
+	ColorBaseURL        string `json:"color_base_url"`
+	MasterBaseURL       string `json:"master_base_url"`
+	OrgFullName         string `json:"org_full_name"`
+	ColorRefreshAt      string `json:"color_refresh_at,omitempty"`
+	ColorRefreshError   string `json:"color_refresh_error,omitempty"`
 }
 
 func (a *AccountInfo) DisplayName() string {
@@ -117,10 +119,10 @@ type ModelCount struct {
 }
 
 type AccountCount struct {
-	UserID     string `json:"user_id"`
-	Nickname   string `json:"nickname"`
-	Remark     string `json:"remark"`
-	Count      int    `json:"count"`
+	UserID   string `json:"user_id"`
+	Nickname string `json:"nickname"`
+	Remark   string `json:"remark"`
+	Count    int    `json:"count"`
 }
 
 func (a *AccountCount) DisplayName() string {
@@ -163,11 +165,11 @@ type AllTimeTotals struct {
 }
 
 type HourlyData struct {
-	Hour        string `json:"hour"`
-	Count       int    `json:"count"`
-	InputTokens int    `json:"input_tokens"`
-	OutputTokens int   `json:"output_tokens"`
-	Errors      int    `json:"errors"`
+	Hour         string `json:"hour"`
+	Count        int    `json:"count"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+	Errors       int    `json:"errors"`
 }
 
 type RequestLog struct {
@@ -316,6 +318,10 @@ func (s *Store) migrate() error {
 	s.db.Exec("ALTER TABLE accounts ADD COLUMN color_base_url TEXT DEFAULT ''")
 	s.db.Exec("ALTER TABLE accounts ADD COLUMN master_base_url TEXT DEFAULT ''")
 	s.db.Exec("ALTER TABLE accounts ADD COLUMN org_full_name TEXT DEFAULT ''")
+
+	// Migration: add per-account colorBaseUrl refresh status
+	s.db.Exec("ALTER TABLE accounts ADD COLUMN color_refresh_at TEXT DEFAULT ''")
+	s.db.Exec("ALTER TABLE accounts ADD COLUMN color_refresh_error TEXT DEFAULT ''")
 
 	// Migration: migrate old schema (api_key as PK) to new schema (user_id as PK)
 	s.migrateUserIDAsPK()
@@ -793,39 +799,39 @@ func (s *Store) AddAccount(userID, ptKey, nickname string, isDefault bool, defau
 		return nil
 	}
 
-		// Check if another account already has the same pt_key (dedup by credential)
-		rows, err := s.db.Query("SELECT user_id, pt_key FROM accounts")
-		if err == nil {
-			for rows.Next() {
-				var existingUserID, encExistingPtKey string
-				if rows.Scan(&existingUserID, &encExistingPtKey) != nil {
-					continue
-				}
-				existingPtKey, decErr := s.decrypt(encExistingPtKey)
-				if decErr != nil {
-					continue
-				}
-				if existingPtKey == ptKey {
-					rows.Close()
-					encPtKey, encErr := s.encrypt(ptKey)
-					if encErr != nil {
-						slog.Error("store: encrypt pt_key failed", "user_id", userID, "error", encErr)
-						return fmt.Errorf("encrypt pt_key: %w", encErr)
-					}
-					_, err = s.db.Exec(
-						"UPDATE accounts SET user_id = ?, pt_key = ?, nickname = CASE WHEN nickname = '' OR nickname IS NULL THEN ? ELSE nickname END, login_type = ?, tenant = ?, color_base_url = ?, master_base_url = ?, org_full_name = ?, updated_at = datetime('now') WHERE user_id = ?",
-						userID, encPtKey, nickname, cLoginType, cTenant, cColorBaseURL, cMasterBaseURL, cOrgFullName, existingUserID,
-					)
-					if err != nil {
-						slog.Error("store: update account (pt_key dedup) failed", "old_user_id", existingUserID, "new_user_id", userID, "error", err)
-						return err
-					}
-					slog.Info("store: merged account by pt_key dedup", "old_user_id", existingUserID, "new_user_id", userID)
-					return nil
-				}
+	// Check if another account already has the same pt_key (dedup by credential)
+	rows, err := s.db.Query("SELECT user_id, pt_key FROM accounts")
+	if err == nil {
+		for rows.Next() {
+			var existingUserID, encExistingPtKey string
+			if rows.Scan(&existingUserID, &encExistingPtKey) != nil {
+				continue
 			}
-			rows.Close()
+			existingPtKey, decErr := s.decrypt(encExistingPtKey)
+			if decErr != nil {
+				continue
+			}
+			if existingPtKey == ptKey {
+				rows.Close()
+				encPtKey, encErr := s.encrypt(ptKey)
+				if encErr != nil {
+					slog.Error("store: encrypt pt_key failed", "user_id", userID, "error", encErr)
+					return fmt.Errorf("encrypt pt_key: %w", encErr)
+				}
+				_, err = s.db.Exec(
+					"UPDATE accounts SET user_id = ?, pt_key = ?, nickname = CASE WHEN nickname = '' OR nickname IS NULL THEN ? ELSE nickname END, login_type = ?, tenant = ?, color_base_url = ?, master_base_url = ?, org_full_name = ?, updated_at = datetime('now') WHERE user_id = ?",
+					userID, encPtKey, nickname, cLoginType, cTenant, cColorBaseURL, cMasterBaseURL, cOrgFullName, existingUserID,
+				)
+				if err != nil {
+					slog.Error("store: update account (pt_key dedup) failed", "old_user_id", existingUserID, "new_user_id", userID, "error", err)
+					return err
+				}
+				slog.Info("store: merged account by pt_key dedup", "old_user_id", existingUserID, "new_user_id", userID)
+				return nil
+			}
 		}
+		rows.Close()
+	}
 
 	// New account — enforce limit
 	var count int
@@ -867,7 +873,7 @@ func (s *Store) AddAccount(userID, ptKey, nickname string, isDefault bool, defau
 }
 
 func (s *Store) ListAccounts() ([]AccountInfo, error) {
-	rows, err := s.db.Query("SELECT user_id, nickname, remark, api_token, is_default, default_model, created_at, credential_valid, credential_refreshed_at, COALESCE(display_order, 0), COALESCE(login_type,''), COALESCE(tenant,''), COALESCE(color_base_url,''), COALESCE(master_base_url,''), COALESCE(org_full_name,'') FROM accounts ORDER BY display_order, created_at")
+	rows, err := s.db.Query("SELECT user_id, nickname, remark, api_token, is_default, default_model, created_at, credential_valid, credential_refreshed_at, COALESCE(display_order, 0), COALESCE(login_type,''), COALESCE(tenant,''), COALESCE(color_base_url,''), COALESCE(master_base_url,''), COALESCE(org_full_name,''), COALESCE(color_refresh_at,''), COALESCE(color_refresh_error,'') FROM accounts ORDER BY display_order, created_at")
 	if err != nil {
 		slog.Error("store: list accounts query failed", "error", err)
 		return nil, err
@@ -878,7 +884,7 @@ func (s *Store) ListAccounts() ([]AccountInfo, error) {
 	for rows.Next() {
 		var a AccountInfo
 		var isDef int
-		if err := rows.Scan(&a.UserID, &a.Nickname, &a.Remark, &a.APIToken, &isDef, &a.DefaultModel, &a.CreatedAt, &a.CredentialValid, &a.CredentialRefreshAt, &a.DisplayOrder, &a.LoginType, &a.Tenant, &a.ColorBaseURL, &a.MasterBaseURL, &a.OrgFullName); err != nil {
+		if err := rows.Scan(&a.UserID, &a.Nickname, &a.Remark, &a.APIToken, &isDef, &a.DefaultModel, &a.CreatedAt, &a.CredentialValid, &a.CredentialRefreshAt, &a.DisplayOrder, &a.LoginType, &a.Tenant, &a.ColorBaseURL, &a.MasterBaseURL, &a.OrgFullName, &a.ColorRefreshAt, &a.ColorRefreshError); err != nil {
 			slog.Error("store: list accounts scan failed", "error", err)
 			return nil, err
 		}
@@ -1255,6 +1261,28 @@ func (s *Store) UpdateAccountCreds(userID string, creds *AccountCreds) error {
 	return err
 }
 
+// UpdateAccountColorStatus records the outcome of a colorBaseUrl refresh attempt
+// for an account. refreshErr is empty on success (which clears any prior error).
+func (s *Store) UpdateAccountColorStatus(userID, refreshAt, refreshErr string) error {
+	_, err := s.db.Exec(
+		"UPDATE accounts SET color_refresh_at = ?, color_refresh_error = ? WHERE user_id = ?",
+		refreshAt, refreshErr, userID,
+	)
+	if err != nil {
+		slog.Error("store: update account color status failed", "user_id", userID, "error", err)
+	}
+	return err
+}
+
+// GetAccountColorStatus returns the last colorBaseUrl refresh time and error for an account.
+func (s *Store) GetAccountColorStatus(userID string) (refreshAt, refreshErr string, err error) {
+	err = s.db.QueryRow(
+		"SELECT COALESCE(color_refresh_at,''), COALESCE(color_refresh_error,'') FROM accounts WHERE user_id = ?",
+		userID,
+	).Scan(&refreshAt, &refreshErr)
+	return refreshAt, refreshErr, err
+}
+
 // --- Settings ---
 
 func (s *Store) GetSettings() (map[string]string, error) {
@@ -1487,21 +1515,21 @@ func (s *Store) GetStats() (*Stats, error) {
 		tf = "date(created_at, '" + mod + "') = date('now', '" + mod + "')"
 	}
 
-	err := s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf).Scan(&stats.TotalRequests)
+	err := s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE " + tf).Scan(&stats.TotalRequests)
 	if err != nil {
 		slog.Error("store: get stats count failed", "error", err)
 		return nil, err
 	}
 
-	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE "+tf).Scan(&stats.AvgLatencyMs)
+	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE " + tf).Scan(&stats.AvgLatencyMs)
 	s.db.QueryRow("SELECT COUNT(*) FROM accounts").Scan(&stats.AccountsCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf+" AND status_code >= 400").Scan(&stats.ErrorCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf+" AND stream = 1").Scan(&stats.StreamCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf+" AND status_code < 400").Scan(&stats.SuccessCount)
-	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE "+tf).Scan(&stats.TotalInputTk)
-	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE "+tf).Scan(&stats.TotalOutputTk)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE " + tf + " AND status_code >= 400").Scan(&stats.ErrorCount)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE " + tf + " AND stream = 1").Scan(&stats.StreamCount)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE " + tf + " AND status_code < 400").Scan(&stats.SuccessCount)
+	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE " + tf).Scan(&stats.TotalInputTk)
+	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE " + tf).Scan(&stats.TotalOutputTk)
 
-	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs WHERE "+tf+" AND model != '' GROUP BY model ORDER BY cnt DESC")
+	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs WHERE " + tf + " AND model != '' GROUP BY model ORDER BY cnt DESC")
 	if err != nil {
 		slog.Error("store: get stats by model query failed", "error", err)
 		return nil, err
@@ -1521,7 +1549,7 @@ func (s *Store) GetStats() (*Stats, error) {
 		validKeys[a.UserID] = true
 	}
 
-	rows2, err := s.db.Query("SELECT api_key, COUNT(*) as cnt FROM request_logs WHERE "+tf+" GROUP BY api_key ORDER BY cnt DESC")
+	rows2, err := s.db.Query("SELECT api_key, COUNT(*) as cnt FROM request_logs WHERE " + tf + " GROUP BY api_key ORDER BY cnt DESC")
 	if err != nil {
 		slog.Error("store: get stats by account query failed", "error", err)
 		return nil, err
@@ -1802,7 +1830,6 @@ func (s *Store) GetRecentLogs(limit int) ([]RequestLog, error) {
 	return logs, rows.Err()
 }
 
-
 // GetRecentErrors returns request logs with status_code >= 400.
 func (s *Store) GetRecentErrors(limit int) ([]RequestLog, error) {
 	if limit <= 0 {
@@ -1835,6 +1862,7 @@ func (s *Store) GetRecentErrors(limit int) ([]RequestLog, error) {
 	}
 	return logs, nil
 }
+
 // CleanupOldLogs deletes request logs older than the specified number of days.
 func (s *Store) CleanupOldLogs(days int) (int64, error) {
 	if days <= 0 {
@@ -1902,13 +1930,13 @@ func EnsureDataDir() (string, error) {
 
 // ExportAccountItem is the format for account export/import.
 type ExportAccountItem struct {
-	UserID       string `json:"user_id"`
-	Nickname     string `json:"nickname"`
-	Remark       string `json:"remark"`
-	PtKey        string `json:"pt_key"`
-	IsDefault    bool   `json:"is_default"`
-	DefaultModel string `json:"default_model"`
-	DisplayOrder int    `json:"display_order"`
+	UserID        string `json:"user_id"`
+	Nickname      string `json:"nickname"`
+	Remark        string `json:"remark"`
+	PtKey         string `json:"pt_key"`
+	IsDefault     bool   `json:"is_default"`
+	DefaultModel  string `json:"default_model"`
+	DisplayOrder  int    `json:"display_order"`
 	LoginType     string `json:"login_type"`
 	Tenant        string `json:"tenant"`
 	ColorBaseURL  string `json:"color_base_url"`
