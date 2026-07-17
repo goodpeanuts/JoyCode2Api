@@ -98,3 +98,27 @@ func TestRefreshAccountColorBaseURL_FailureKeepsOldValue(t *testing.T) {
 		t.Fatal("expected recorded error, got empty")
 	}
 }
+
+func TestRefreshCycleRefreshesColorBaseURL(t *testing.T) {
+	s := newColorTestStore(t)
+	if err := s.AddAccount("u1", "ptkey", "nick", true, "GLM-5.1", &store.AccountCreds{ColorBaseURL: "https://old.example.com"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	srv := mockUserInfoServer(t, "https://cycle.example.com", 0)
+	defer srv.Close()
+	origNew := newUserInfoClient
+	newUserInfoClient = func(ptKey, userID string) *joycode.Client {
+		c := joycode.NewClient(ptKey, userID)
+		c.ColorBaseURL = srv.URL
+		return c
+	}
+	defer func() { newUserInfoClient = origNew }()
+
+	// Directly exercise the all-accounts helper the cycle calls.
+	RefreshAllAccountsColorBaseURL(s)
+
+	acc, _ := s.GetAccount("u1")
+	if acc.ColorBaseURL != "https://cycle.example.com" {
+		t.Fatalf("colorBaseUrl not refreshed by cycle helper: %q", acc.ColorBaseURL)
+	}
+}

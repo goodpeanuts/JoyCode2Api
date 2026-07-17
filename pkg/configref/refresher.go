@@ -248,6 +248,10 @@ func (r *ConfigRefresher) refreshWithUser(userID string) {
 		r.store.SetRemoteConfig("error_config", string(data))
 	}
 
+	// 5. Refresh each account's colorBaseUrl from joycode_userInfo.
+	//    Runs on the same cycle as config refresh (first run at startup + every interval).
+	RefreshAllAccountsColorBaseURL(r.store)
+
 	if firstErr != nil {
 		r.setStatus(false, firstErr.Error(), start, usedUserID)
 	} else {
