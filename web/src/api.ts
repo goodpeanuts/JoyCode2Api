@@ -19,6 +19,8 @@ export interface Account {
   login_type?: string;
   tenant?: string;
   color_base_url?: string;
+  color_refresh_at?: string;
+  color_refresh_error?: string;
   master_base_url?: string;
   org_full_name?: string;
 }

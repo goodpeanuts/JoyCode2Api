@@ -363,24 +363,39 @@ const Accounts: React.FC = () => {
       width: 100,
       render: (_: unknown, record: Account) => {
         const cv = record.credential_valid;
+        let statusTag: React.ReactNode;
         if (cv === 1) {
-          return (
+          statusTag = (
             <Tooltip title={`上次刷新：${record.credential_refreshed_at || record.credential_checked_at || '未知'}`}>
               <Tag color="success" icon={<CheckCircleOutlined />}>有效</Tag>
             </Tooltip>
           );
-        }
-        if (cv === 0) {
-          return (
+        } else if (cv === 0) {
+          statusTag = (
             <Tooltip title={record.credential_error || '凭证已过期，请使用 OAuth 授权登录重新获取'}>
               <Tag color="error" icon={<CloseCircleOutlined />}>已过期</Tag>
             </Tooltip>
           );
+        } else {
+          statusTag = (
+            <Tooltip title="keepalive 将在启动后 10 分钟内完成首次检测">
+              <Tag color="processing" icon={<ClockCircleOutlined />}>首次检测中</Tag>
+            </Tooltip>
+          );
         }
         return (
-          <Tooltip title="keepalive 将在启动后 10 分钟内完成首次检测">
-            <Tag color="processing" icon={<ClockCircleOutlined />}>首次检测中</Tag>
-          </Tooltip>
+          <div style={{ lineHeight: 1.4 }}>
+            {statusTag}
+            {record.color_refresh_error && (
+              <>
+                <br />
+                <Typography.Text type="danger" style={{ fontSize: 11 }}>
+                  上次获取 colorBaseUrl 失败：{record.color_refresh_error}
+                  {record.color_refresh_at && `（${new Date(record.color_refresh_at).toLocaleString()}）`}
+                </Typography.Text>
+              </>
+            )}
+          </div>
         );
       },
     },
