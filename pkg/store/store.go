@@ -181,6 +181,7 @@ type RequestLog struct {
 	StatusCode   int    `json:"status_code"`
 	LatencyMs    int64  `json:"latency_ms"`
 	ErrorMessage string `json:"error_message"`
+	ErrorDetail string `json:"error_detail"`
 	InputTokens  int    `json:"input_tokens"`
 	OutputTokens int    `json:"output_tokens"`
 	CreatedAt    string `json:"created_at"`
@@ -342,6 +343,9 @@ func (s *Store) migrate() error {
 
 	// Migration: initialize display_order for existing accounts
 	s.migrateDisplayOrder()
+
+	// Migration: add error_detail column to request_logs
+	s.db.Exec("ALTER TABLE request_logs ADD COLUMN error_detail TEXT DEFAULT ''")
 
 	// Index for cursor-paginated account log queries
 	// (WHERE api_key=? [AND ...] ORDER BY id DESC). Created last so it survives
@@ -1381,14 +1385,14 @@ func (s *Store) SetRemoteConfig(key, value string) error {
 
 // --- Request Logging ---
 
-func (s *Store) LogRequest(userID, model, endpoint string, stream bool, statusCode int, latencyMs int64, errMsg string, inputTokens, outputTokens int) error {
+func (s *Store) LogRequest(userID, model, endpoint string, stream bool, statusCode int, latencyMs int64, errMsg string, errorDetail string, inputTokens, outputTokens int) error {
 	sInt := 0
 	if stream {
 		sInt = 1
 	}
 	_, err := s.db.Exec(
-		"INSERT INTO request_logs (api_key, model, endpoint, stream, status_code, latency_ms, error_message, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		userID, model, endpoint, sInt, statusCode, latencyMs, errMsg, inputTokens, outputTokens,
+		"INSERT INTO request_logs (api_key, model, endpoint, stream, status_code, latency_ms, error_message, error_detail, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		userID, model, endpoint, sInt, statusCode, latencyMs, errMsg, errorDetail, inputTokens, outputTokens,
 	)
 	if err != nil {
 		slog.Error("store: log request failed", "user_id", userID, "endpoint", endpoint, "error", err)
@@ -1727,7 +1731,7 @@ func (s *Store) GetAccountLogsQuery(userID string, q LogQuery) ([]RequestLog, er
 	args = append(args, q.Limit)
 
 	rows, err := s.db.Query(
-		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), created_at FROM request_logs WHERE "+where+" ORDER BY id DESC LIMIT ?",
+		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), COALESCE(error_detail, ''), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), created_at FROM request_logs WHERE "+where+" ORDER BY id DESC LIMIT ?",
 		args...,
 	)
 	if err != nil {
@@ -1739,7 +1743,7 @@ func (s *Store) GetAccountLogsQuery(userID string, q LogQuery) ([]RequestLog, er
 	for rows.Next() {
 		var l RequestLog
 		var streamInt int
-		if err := rows.Scan(&l.ID, &l.UserID, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.InputTokens, &l.OutputTokens, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.UserID, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.ErrorDetail, &l.InputTokens, &l.OutputTokens, &l.CreatedAt); err != nil {
 			return nil, err
 		}
 		l.Stream = streamInt == 1
@@ -1836,7 +1840,7 @@ func (s *Store) GetRecentErrors(limit int) ([]RequestLog, error) {
 		limit = 50
 	}
 	rows, err := s.db.Query(
-		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), created_at FROM request_logs WHERE status_code >= 400 ORDER BY id DESC LIMIT ?",
+		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), COALESCE(error_detail, ''), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), created_at FROM request_logs WHERE status_code >= 400 ORDER BY id DESC LIMIT ?",
 		limit,
 	)
 	if err != nil {
@@ -1849,7 +1853,7 @@ func (s *Store) GetRecentErrors(limit int) ([]RequestLog, error) {
 	for rows.Next() {
 		var l RequestLog
 		var streamInt int
-		if err := rows.Scan(&l.ID, &l.UserID, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.InputTokens, &l.OutputTokens, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.UserID, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.ErrorDetail, &l.InputTokens, &l.OutputTokens, &l.CreatedAt); err != nil {
 			slog.Error("store: get recent errors scan failed", "error", err)
 			return nil, err
 		}
