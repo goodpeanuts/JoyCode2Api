@@ -374,9 +374,9 @@ func TestSetSettingOverwrite(t *testing.T) {
 func TestLogRequestAndGetStats(t *testing.T) {
 	s := openTestStore(t)
 
-	s.LogRequest("key1", "JoyAI-Code", "/v1/chat/completions", true, 200, 500, "", 0, 0)
-	s.LogRequest("key1", "GLM-5.1", "/v1/chat/completions", false, 200, 300, "", 0, 0)
-	s.LogRequest("key2", "JoyAI-Code", "/v1/messages", true, 200, 400, "", 0, 0)
+	s.LogRequest("key1", "JoyAI-Code", "/v1/chat/completions", true, 200, 500, "", "", 0, 0)
+	s.LogRequest("key1", "GLM-5.1", "/v1/chat/completions", false, 200, 300, "", "", 0, 0)
+	s.LogRequest("key2", "JoyAI-Code", "/v1/messages", true, 200, 400, "", "", 0, 0)
 
 	stats, err := s.GetStats()
 	if err != nil {
@@ -411,9 +411,9 @@ func TestGetStatsEmpty(t *testing.T) {
 func TestGetAccountStats(t *testing.T) {
 	s := openTestStore(t)
 
-	s.LogRequest("key1", "JoyAI-Code", "/v1/chat/completions", true, 200, 500, "", 0, 0)
-	s.LogRequest("key1", "GLM-5.1", "/v1/messages", false, 200, 300, "", 0, 0)
-	s.LogRequest("key1", "JoyAI-Code", "/v1/chat/completions", true, 500, 100, "", 0, 0)
+	s.LogRequest("key1", "JoyAI-Code", "/v1/chat/completions", true, 200, 500, "", "", 0, 0)
+	s.LogRequest("key1", "GLM-5.1", "/v1/messages", false, 200, 300, "", "", 0, 0)
+	s.LogRequest("key1", "JoyAI-Code", "/v1/chat/completions", true, 500, 100, "", "", 0, 0)
 
 	stats, err := s.GetAccountStats("key1")
 	if err != nil {
@@ -451,9 +451,9 @@ func TestGetAccountStatsEmpty(t *testing.T) {
 func TestGetRecentLogs(t *testing.T) {
 	s := openTestStore(t)
 
-	s.LogRequest("key1", "model1", "/v1/test", true, 200, 100, "", 0, 0)
-	s.LogRequest("key2", "model2", "/v1/test", false, 200, 200, "", 0, 0)
-	s.LogRequest("key1", "model3", "/v1/test", true, 200, 300, "", 0, 0)
+	s.LogRequest("key1", "model1", "/v1/test", true, 200, 100, "", "", 0, 0)
+	s.LogRequest("key2", "model2", "/v1/test", false, 200, 200, "", "", 0, 0)
+	s.LogRequest("key1", "model3", "/v1/test", true, 200, 300, "", "", 0, 0)
 
 	logs, err := s.GetRecentLogs(2)
 	if err != nil {
@@ -471,8 +471,8 @@ func TestGetRecentLogs(t *testing.T) {
 func TestGetRecentLogsDefault(t *testing.T) {
 	s := openTestStore(t)
 
-	s.LogRequest("key1", "m1", "/v1", true, 200, 100, "", 0, 0)
-	s.LogRequest("key1", "m2", "/v1", true, 200, 100, "", 0, 0)
+	s.LogRequest("key1", "m1", "/v1", true, 200, 100, "", "", 0, 0)
+	s.LogRequest("key1", "m2", "/v1", true, 200, 100, "", "", 0, 0)
 
 	logs, err := s.GetRecentLogs(0)
 	if err != nil {
@@ -512,7 +512,7 @@ func TestEncryptionKeyReused(t *testing.T) {
 // (strftime with no offset modifier). This is the default display base.
 func TestGetHourlyStatsBucketsInUTC(t *testing.T) {
 	s := openTestStore(t)
-	if err := s.LogRequest("k1", "GLM-5.1", "/v1/chat", true, 200, 100, "", 1, 2); err != nil {
+	if err := s.LogRequest("k1", "GLM-5.1", "/v1/chat", true, 200, 100, "", "", 1, 2); err != nil {
 		t.Fatalf("log request: %v", err)
 	}
 
@@ -543,7 +543,7 @@ func TestGetHourlyStatsBucketsInUTC(t *testing.T) {
 func TestGetHourlyStatsRespectsTimezone(t *testing.T) {
 	s := openTestStore(t)
 	s.SetSetting("timezone", "Asia/Shanghai")
-	if err := s.LogRequest("k1", "GLM-5.1", "/v1/chat", true, 200, 100, "", 1, 2); err != nil {
+	if err := s.LogRequest("k1", "GLM-5.1", "/v1/chat", true, 200, 100, "", "", 1, 2); err != nil {
 		t.Fatalf("log request: %v", err)
 	}
 
@@ -680,7 +680,7 @@ func TestMigrateColumnDefaultsToUTC(t *testing.T) {
 	}
 
 	// A default-based insert must now store UTC (matches datetime('now')).
-	if err := s2.LogRequest("k", "m", "/e", false, 200, 1, "", 0, 0); err != nil {
+	if err := s2.LogRequest("k", "m", "/e", false, 200, 1, "", "", 0, 0); err != nil {
 		t.Fatalf("log request: %v", err)
 	}
 	var stored, utcNow string
@@ -753,7 +753,7 @@ func seedLogs(t *testing.T, s *Store, userID string, n int) {
 			status = 500
 		}
 		stream := i%2 == 0
-		if err := s.LogRequest(userID, "m", "/e", stream, status, 10, "", 0, 0); err != nil {
+		if err := s.LogRequest(userID, "m", "/e", stream, status, 10, "", "", 0, 0); err != nil {
 			t.Fatalf("seed log %d: %v", i, err)
 		}
 	}
