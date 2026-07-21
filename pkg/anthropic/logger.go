@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 )
 
 type contextKey string
@@ -81,4 +82,31 @@ func logUpstreamError(r *http.Request, attempt, maxAttempt int, body string) {
 		"max", maxAttempt,
 		"body", truncated,
 	)
+}
+
+// parseUpstreamErrorDetail extracts structured error info from an upstream error
+// string (either a client.Post error like "API error 400: {...}" or an SSE data
+// line like "{\"error\":{...}}"). Returns a JSON string with error_code,
+// error_message, error_type, error_status fields, or "" on parse failure.
+func parseUpstreamErrorDetail(raw string) string {
+	idx := strings.Index(raw, "{")
+	if idx < 0 {
+		return ""
+	}
+	body := raw[idx:]
+	var errResp map[string]interface{}
+	if json.Unmarshal([]byte(body), &errResp) != nil {
+		return ""
+	}
+	if errObj, ok := errResp["error"].(map[string]interface{}); ok {
+		detail := map[string]interface{}{
+			"error_code":    errObj["code"],
+			"error_message": errObj["message"],
+			"error_type":    errObj["type"],
+			"error_status":  errObj["status"],
+		}
+		b, _ := json.Marshal(detail)
+		return string(b)
+	}
+	return ""
 }
