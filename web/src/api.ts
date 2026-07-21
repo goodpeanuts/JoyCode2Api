@@ -104,6 +104,7 @@ export interface RequestLog {
   status_code: number;
   latency_ms: number;
   error_message: string;
+  error_detail: string;
   input_tokens: number;
   output_tokens: number;
   created_at: string;

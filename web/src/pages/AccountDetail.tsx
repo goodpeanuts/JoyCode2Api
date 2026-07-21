@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Alert, Card, Row, Col, Statistic, Typography, Spin, Tag, Select, Button,
   message, Space, Table, Badge, Segmented, Popconfirm, Tooltip, Divider,
-  DatePicker,
+  DatePicker, Descriptions,
 } from 'antd';
 import {
   ArrowLeftOutlined, ApiOutlined, ThunderboltOutlined,
@@ -846,17 +846,44 @@ const AccountDetail: React.FC = () => {
                     <Typography.Text strong style={{ display: 'block', marginBottom: 6, color: '#cf1322' }}>
                       错误详情
                     </Typography.Text>
-                    <pre style={{
-                      margin: 0,
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                      fontSize: 12,
-                      lineHeight: 1.6,
-                      color: '#cf1322',
-                      fontFamily: 'monospace',
-                    }}>
-                      {record.error_message || `HTTP ${record.status_code}`}
-                    </pre>
+                    {(() => {
+                      if (record.error_detail) {
+                        try {
+                          const detail = JSON.parse(record.error_detail);
+                          return (
+                            <Descriptions size="small" column={2} colon={false}>
+                              <Descriptions.Item label="错误码">
+                                <Typography.Text code style={{ fontSize: 12 }}>{detail.error_code || '-'}</Typography.Text>
+                              </Descriptions.Item>
+                              <Descriptions.Item label="错误类型">
+                                <Typography.Text code style={{ fontSize: 12 }}>{detail.error_type || '-'}</Typography.Text>
+                              </Descriptions.Item>
+                              <Descriptions.Item label="状态码">
+                                <Typography.Text>{detail.error_status || '-'}</Typography.Text>
+                              </Descriptions.Item>
+                              <Descriptions.Item label="错误信息" span={2}>
+                                <Typography.Text style={{ fontSize: 12 }}>{detail.error_message || '-'}</Typography.Text>
+                              </Descriptions.Item>
+                            </Descriptions>
+                          );
+                        } catch {
+                          // fall through to raw error_message
+                        }
+                      }
+                      return (
+                        <pre style={{
+                          margin: 0,
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          fontSize: 12,
+                          lineHeight: 1.6,
+                          color: '#cf1322',
+                          fontFamily: 'monospace',
+                        }}>
+                          {record.error_message || `HTTP ${record.status_code}`}
+                        </pre>
+                      );
+                    })()}
                   </div>
                 )}
                 <div style={{
