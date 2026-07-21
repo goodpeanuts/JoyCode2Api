@@ -162,6 +162,10 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 
 	if lastErr != nil {
 		errMsg := lastErr.Error()
+		// Parse upstream error detail and store in context for middleware logging
+		if detail := parseUpstreamErrorDetail(errMsg); detail != "" {
+			store.SetErrorDetail(r, detail)
+		}
 		if isContextLimitError(errMsg) {
 			writeAnthropicRequestError(w, "上下文长度超出模型限制。请压缩对话历史或开启新对话。原始错误: "+errMsg)
 			return
@@ -263,6 +267,10 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 	}
 	if err != nil {
 		errMsg := err.Error()
+		// Parse upstream error detail and store in context for middleware logging
+		if detail := parseUpstreamErrorDetail(errMsg); detail != "" {
+			store.SetErrorDetail(r, detail)
+		}
 		if isContextLimitError(errMsg) {
 			reqLog(r).Warn("context limit exceeded (stream), cannot proceed even after progressive truncation")
 			writeAnthropicRequestError(w, "上下文长度超出模型限制，已尝试自动截断但仍无法满足。请压缩对话历史或开启新对话。原始错误: "+errMsg)
@@ -855,6 +863,10 @@ func (h *Handler) connectStreamWithRetry(r *http.Request, jcBody map[string]inte
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream error: %s", truncate(dataContent, 500))
 			logUpstreamError(r, attempt, maxRetries, dataContent)
+			// Store parsed error detail in context for middleware
+			if detail := parseUpstreamErrorDetail(dataContent); detail != "" {
+				store.SetErrorDetail(r, detail)
+			}
 			if isContextLimitError(dataContent) {
 				return nil, lastErr
 			}
