@@ -432,12 +432,15 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 			latency := time.Since(start).Milliseconds()
 
 			var errMsg string
+			var errorDetail string
 			if rw.statusCode >= 400 {
 				reqID := atomic.AddUint64(&requestCounter, 1)
 				errMsg = fmt.Sprintf("HTTP %d on %s %s", rw.statusCode, r.Method, path)
 				if body := strings.TrimSpace(rw.body.String()); body != "" {
 					errMsg = fmt.Sprintf("%s\n%s", errMsg, body)
 				}
+				// Collect upstream error detail from context (set by proxy handler)
+				errorDetail = store.GetErrorDetail(r)
 				slog.Error("proxy error response",
 					"request_id", reqID,
 					"status", rw.statusCode,
@@ -457,7 +460,7 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 					model = resolvedModel
 				}
 				if s.GetSetting("enable_request_logging") != "false" {
-					go s.LogRequest(apiKey, model, path, isStream, rw.statusCode, latency, errMsg, inTk, outTk)
+					go s.LogRequest(apiKey, model, path, isStream, rw.statusCode, latency, errMsg, errorDetail, inTk, outTk)
 				}
 		}
 	})
