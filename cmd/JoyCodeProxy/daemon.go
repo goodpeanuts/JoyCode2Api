@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -20,15 +21,17 @@ import (
 )
 
 const (
-	daemonChildEnv    = "_JOYCODE_DAEMON_CHILD"
+	daemonChildEnv      = "_JOYCODE_DAEMON_CHILD"
 	daemonSupervisorEnv = "_JOYCODE_DAEMON_SUPERVISOR"
-	daemonPortEnv     = "_JOYCODE_DAEMON_PORT"
-	daemonVerboseEnv  = "_JOYCODE_DAEMON_VERBOSE"
-	daemonSkipValEnv  = "_JOYCODE_DAEMON_SKIP_VALIDATION"
-	pidFileName       = ".joycode-proxy/daemon.pid"
-	logFileName       = ".joycode-proxy/logs/daemon.log"
-	maxRestartDelay   = 30 * time.Second
-	baseRestartDelay  = 1 * time.Second
+	daemonPortEnv       = "_JOYCODE_DAEMON_PORT"
+	daemonVerboseEnv    = "_JOYCODE_DAEMON_VERBOSE"
+	daemonSkipValEnv    = "_JOYCODE_DAEMON_SKIP_VALIDATION"
+	daemonHostEnv       = "_JOYCODE_DAEMON_HOST"
+	daemonTLSEnv        = "_JOYCODE_DAEMON_TLS"
+	pidFileName         = ".joycode-proxy/daemon.pid"
+	logFileName         = ".joycode-proxy/logs/daemon.log"
+	maxRestartDelay     = 30 * time.Second
+	baseRestartDelay    = 1 * time.Second
 	// A child that exits sooner than this is considered a "fast failure"
 	// (likely a deterministic config error rather than a transient crash).
 	fastFailThreshold = 5 * time.Second
@@ -77,10 +80,12 @@ var daemonRestartCmd = &cobra.Command{
 	Short:   "重启守护进程",
 	Example: `  jcproxy daemon restart`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// stopDaemon now waits for the old process to fully exit (with a
+		// SIGKILL fallback), so restart no longer needs a fixed sleep that
+		// could race with the old instance releasing the port.
 		if err := stopDaemon(); err != nil {
 			log.Printf("stop warning: %v", err)
 		}
-		time.Sleep(500 * time.Millisecond)
 		return startDaemon()
 	},
 }
@@ -105,6 +110,8 @@ var daemonLogsCmd = &cobra.Command{
 }
 
 var daemonLines int
+var daemonHost string
+var daemonTLS bool
 
 func init() {
 	home, _ := os.UserHomeDir()
@@ -112,6 +119,8 @@ func init() {
 	daemonLogFile = filepath.Join(home, logFileName)
 
 	daemonLogsCmd.Flags().IntVarP(&daemonLines, "lines", "n", 20, "显示最后 N 行日志")
+	daemonStartCmd.Flags().StringVar(&daemonHost, "host", "", "透传给 serve 的绑定地址（默认 0.0.0.0）")
+	daemonStartCmd.Flags().BoolVar(&daemonTLS, "tls", true, "透传给 serve 的 TLS 开关")
 
 	daemonCmd.AddCommand(daemonStartCmd)
 	daemonCmd.AddCommand(daemonStopCmd)
@@ -132,6 +141,16 @@ func startDaemon() error {
 		return fmt.Errorf("daemon already running (PID %d). Use 'daemon restart' or 'daemon stop' first", pid)
 	}
 
+	// Best-effort port probe: fail fast with a clear message instead of
+	// spawning a supervisor whose child immediately dies on bind.
+	if servePort > 0 {
+		if ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(servePort))); err != nil {
+			return fmt.Errorf("端口 %d 已被占用（可能已有 serve/服务实例在运行）。请先停止旧实例，或用 --port 换端口", servePort)
+		} else {
+			ln.Close()
+		}
+	}
+
 	binPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("cannot determine binary path: %w", err)
@@ -150,6 +169,12 @@ func startDaemon() error {
 	}
 	if skipValidation {
 		env = append(env, daemonSkipValEnv+"=1")
+	}
+	if daemonHost != "" {
+		env = append(env, daemonHostEnv+"="+daemonHost)
+	}
+	if !daemonTLS {
+		env = append(env, daemonTLSEnv+"=0")
 	}
 
 	cmd := exec.Command(binPath)
@@ -186,9 +211,17 @@ func stopDaemon() error {
 	}
 
 	proc, err := os.FindProcess(pidData.PID)
-	if err != nil {
+	if err != nil || !isProcessAlive(proc) {
 		removePIDFile()
-		fmt.Println("Daemon not running (process not found).")
+		fmt.Println("Daemon not running (stale PID file removed).")
+		return nil
+	}
+
+	// Guard against PID reuse: verify the PID still belongs to a jcproxy
+	// process before signalling it, so we never SIGTERM an unrelated process.
+	if !daemonProcessMatches(pidData) {
+		removePIDFile()
+		fmt.Printf("PID %d no longer belongs to jcproxy (PID was reused); stale PID file removed.\n", pidData.PID)
 		return nil
 	}
 
@@ -198,21 +231,57 @@ func stopDaemon() error {
 		return nil
 	}
 
-	done := make(chan error, 1)
-	go func() {
-		_, err := proc.Wait()
-		done <- err
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		killProcess(proc)
+	// Poll for exit (Wait() is useless here: this CLI is not the parent, so
+	// it would return ECHILD immediately). Escalate to SIGKILL after 5s.
+	if waitForProcessExit(proc, 5*time.Second) {
+		removePIDFile()
+		fmt.Printf("Daemon stopped (was PID %d)\n", pidData.PID)
+		return nil
 	}
 
+	fmt.Printf("Daemon PID %d did not exit within 5s; sending SIGKILL...\n", pidData.PID)
+	_ = killProcess(proc)
+	if !waitForProcessExit(proc, 3*time.Second) {
+		// Keep the PID file so the state stays visible for diagnosis.
+		return fmt.Errorf("daemon process %d 拒绝退出（SIGKILL 后仍存活），PID 文件已保留，请手动检查", pidData.PID)
+	}
 	removePIDFile()
-	fmt.Printf("Daemon stopped (was PID %d)\n", pidData.PID)
+	fmt.Printf("Daemon stopped (was PID %d, SIGKILL)\n", pidData.PID)
 	return nil
+}
+
+// waitForProcessExit polls the process with Signal(0) until it is gone or the
+// timeout elapses; reports whether the process exited in time.
+func waitForProcessExit(proc *os.Process, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if !isProcessAlive(proc) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// daemonProcessMatches verifies via `ps` that the PID recorded in the PID file
+// still runs a jcproxy-family binary. Legacy PID files without an exe path
+// fall back to matching any jcproxy/JoyCodeProxy command; when ps is
+// unavailable the check degrades to "alive is enough" (returns true).
+func daemonProcessMatches(data daemonPID) bool {
+	out, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(data.PID)).Output()
+	if err != nil {
+		return true // ps failed/unavailable — don't block shutdown on it
+	}
+	comm := strings.TrimSpace(string(out))
+	if comm == "" {
+		return false // ps ran but reported nothing → process is gone
+	}
+	if data.Exe != "" {
+		return strings.Contains(comm, filepath.Base(data.Exe))
+	}
+	return strings.Contains(comm, "jcproxy") || strings.Contains(comm, "JoyCodeProxy")
 }
 
 func daemonStatusCmdRun() error {
@@ -241,35 +310,50 @@ func daemonStatusCmdRun() error {
 }
 
 func tailDaemonLogs(n int) error {
-	data, err := os.ReadFile(daemonLogFile)
+	f, err := os.Open(daemonLogFile)
 	if err != nil {
 		fmt.Println("No daemon log file found.")
 		return nil
 	}
-	lines := splitLines(string(data))
-	start := len(lines) - n
-	if start < 0 {
-		start = 0
+	defer f.Close()
+
+	// Read only the tail of the file (it can be up to ~100MB) instead of
+	// loading the whole thing into memory.
+	const tailBytes = 256 * 1024
+	size := int64(0)
+	if st, err := f.Stat(); err == nil {
+		size = st.Size()
 	}
-	for _, line := range lines[start:] {
+	readSize := int64(tailBytes)
+	if readSize > size {
+		readSize = size
+	}
+	buf := make([]byte, readSize)
+	if _, err := f.ReadAt(buf, size-readSize); err != nil && readSize > 0 {
+		fmt.Println("No daemon log file found.")
+		return nil
+	}
+	lines := splitLines(string(buf))
+	// The first line of a partial chunk is likely truncated mid-line.
+	if readSize < size && len(lines) > 0 {
+		lines = lines[1:]
+	}
+	for _, line := range tailLines(lines, n) {
 		fmt.Println(line)
 	}
 	return nil
 }
 
-// runAsDaemonChild redirects logs to daemon log file with rotation.
-// Child uses "serve" prefix instead of "daemon" to avoid file conflicts with supervisor.
-func runAsDaemonChild() {
-	home, _ := os.UserHomeDir()
-	fullLogDir := filepath.Join(home, logDir)
-	cfg := logrot.DefaultConfig(fullLogDir, "serve")
-	rw, err := logrot.New(cfg)
-	if err != nil {
-		log.Fatalf("[daemon] cannot open log file: %v", err)
+// tailLines returns the last n entries of lines (nil-safe).
+func tailLines(lines []string, n int) []string {
+	if n <= 0 || len(lines) == 0 {
+		return nil
 	}
-	log.SetOutput(rw)
-	slog.SetDefault(slog.New(slog.NewTextHandler(rw, &slog.HandlerOptions{Level: slog.LevelInfo})))
-	log.Printf("[daemon-child] serve process started (PID %d)", os.Getpid())
+	start := len(lines) - n
+	if start < 0 {
+		start = 0
+	}
+	return lines[start:]
 }
 
 // RunSupervisor starts a supervisor loop that spawns and monitors the child process.
@@ -285,12 +369,19 @@ func RunSupervisor(port int) {
 	log.SetOutput(rw)
 	slog.SetDefault(slog.New(slog.NewTextHandler(rw, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
-	log.Printf("[supervisor] starting (PID %d, port %d)", os.Getpid(), port)
+	binPath, err := os.Executable()
+	if err == nil {
+		log.Printf("[supervisor] starting (PID %d, port %d, exe %s)", os.Getpid(), port, binPath)
+	} else {
+		log.Printf("[supervisor] starting (PID %d, port %d)", os.Getpid(), port)
+		binPath = ""
+	}
 
 	writePIDFile(daemonPID{
 		PID:       os.Getpid(),
 		Port:      port,
 		StartedAt: time.Now().Format(time.RFC3339),
+		Exe:       binPath,
 	})
 
 	sigCh := make(chan os.Signal, 1)
@@ -312,6 +403,12 @@ func RunSupervisor(port int) {
 		}
 		if os.Getenv(daemonSkipValEnv) == "1" {
 			args = append(args, "--skip-validation")
+		}
+		if host := os.Getenv(daemonHostEnv); host != "" {
+			args = append(args, "--host", host)
+		}
+		if os.Getenv(daemonTLSEnv) == "0" {
+			args = append(args, "--tls=false")
 		}
 
 		// Build child environment: inherit parent env but REMOVE supervisor marker
@@ -402,6 +499,9 @@ type daemonPID struct {
 	PID       int    `json:"pid"`
 	Port      int    `json:"port"`
 	StartedAt string `json:"started_at"`
+	// Exe is the supervisor binary path recorded at start, used to detect
+	// PID reuse (empty in legacy PID files).
+	Exe string `json:"exe,omitempty"`
 }
 
 func writePIDFile(data daemonPID) error {

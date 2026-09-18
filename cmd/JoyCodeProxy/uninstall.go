@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -57,6 +59,15 @@ func runUninstall() error {
 	fmt.Println("→ 移除系统服务")
 	if err := uninstallService(); err != nil {
 		fmt.Printf("  警告：移除系统服务时出错：%v\n", err)
+	}
+
+	// 2b. 前台 serve 进程不由 daemon/service 管理，检测到时提示手动处理
+	if out, err := exec.Command("pgrep", "-fl", "jcproxy .*serve|jcproxy serve").Output(); err == nil && len(strings.TrimSpace(string(out))) > 0 {
+		fmt.Println("→ 注意：检测到仍在运行的前台 serve 进程：")
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			fmt.Printf("    %s\n", line)
+		}
+		fmt.Println("  卸载不会终止它们；如需停止请手动 kill 对应 PID。")
 	}
 
 	// 3. 数据目录：默认保留，仅 --purge --yes 才删除

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/spf13/cobra"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/auth"
@@ -57,12 +58,22 @@ var configCmd = &cobra.Command{
 		fmt.Println()
 		fmt.Println("  Service:")
 		home, _ := os.UserHomeDir()
-		plistPath := filepath.Join(home, "Library", "LaunchAgents", plistName)
-		if _, err := os.Stat(plistPath); os.IsNotExist(err) {
+		var unitPath string
+		switch runtime.GOOS {
+		case "darwin":
+			unitPath = filepath.Join(home, "Library", "LaunchAgents", plistName)
+		case "linux":
+			unitPath = filepath.Join(home, ".config", "systemd", "user", serviceLabel+".service")
+		default:
+			unitPath = ""
+		}
+		if unitPath == "" {
+			fmt.Println("    Installed: unsupported platform for service install")
+		} else if _, err := os.Stat(unitPath); os.IsNotExist(err) {
 			fmt.Println("    Installed: no")
 		} else {
 			fmt.Println("    Installed: yes")
-			fmt.Printf("    Plist:     %s\n", plistPath)
+			fmt.Printf("    Unit:      %s\n", unitPath)
 		}
 
 		// Models

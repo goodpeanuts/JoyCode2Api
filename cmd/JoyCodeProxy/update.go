@@ -328,24 +328,27 @@ func serviceUnitPath() string {
 	}
 }
 
-// installedServicePort reports whether a service unit exists and, if so, the
-// port it was configured with (falling back to servePort's default if the unit
-// exists but no port can be parsed).
-func installedServicePort() (port int, installed bool) {
+// installedServiceConfig reports whether a service is installed and, if so,
+// the configuration it should be reinstalled with. Preference order:
+// the service.json persisted by `service install` (exact), then parsing
+// "--port"/"--skip-validation" out of the plist/unit text (legacy installs).
+func installedServiceConfig() (serviceConfig, bool) {
+	if cfg, ok := readServiceConfig(); ok {
+		return cfg, true
+	}
 	path := serviceUnitPath()
 	if path == "" {
-		return 0, false
+		return serviceConfig{}, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, false
+		return serviceConfig{}, false
 	}
-	// Both the plist (<string>34891</string> after a --port arg) and the systemd
-	// unit (ExecStart=... serve --port 34891) contain "--port <N>"; parse that.
+	cfg := serviceConfig{Port: servePort, SkipValidation: strings.Contains(string(data), "--skip-validation")}
 	if p, ok := parsePortAfterFlag(string(data)); ok {
-		return p, true
+		cfg.Port = p
 	}
-	return servePort, true
+	return cfg, true
 }
 
 // parsePortAfterFlag extracts the integer following the first "--port" token in
@@ -430,9 +433,9 @@ func runUpdate() error {
 	}
 
 	// Capture prior state so we only restart what existed before, and preserve
-	// the configured service port instead of resetting it to the default.
+	// the configured service settings instead of resetting them to defaults.
 	_, daemonWasRunning := checkRunningDaemon()
-	svcPort, svcInstalled := installedServicePort()
+	svcCfg, svcInstalled := installedServiceConfig()
 
 	// 6. Replace the binary FIRST. Replacing a running executable's inode via an
 	// in-place rename is safe on POSIX (the old process keeps its open file), and
@@ -452,9 +455,10 @@ func runUpdate() error {
 		if err := uninstallService(); err != nil {
 			fmt.Printf("  警告：移除旧系统服务时出错：%v\n", err)
 		}
-		if err := installService(svcPort); err != nil {
+		writeServiceConfig(svcCfg)
+		if err := installService(svcCfg); err != nil {
 			fmt.Printf("  警告：重装系统服务失败：%v\n", err)
-			fmt.Printf("  请手动执行 `jcproxy service install -p %d` 启动服务。\n", svcPort)
+			fmt.Printf("  请手动执行 `jcproxy service install -p %d` 启动服务。\n", svcCfg.Port)
 		}
 	} else if daemonWasRunning {
 		fmt.Println("→ 重启守护进程")

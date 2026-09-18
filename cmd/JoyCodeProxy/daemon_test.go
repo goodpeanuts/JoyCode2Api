@@ -104,3 +104,79 @@ func TestMinDuration(t *testing.T) {
 		t.Error("min(2s, 1s) should be 1s")
 	}
 }
+
+func TestTailLines(t *testing.T) {
+	lines := []string{"a", "b", "c", "d", "e"}
+	if got := tailLines(lines, 2); len(got) != 2 || got[0] != "d" || got[1] != "e" {
+		t.Errorf("tailLines(lines,2) = %v, want [d e]", got)
+	}
+	if got := tailLines(lines, 10); len(got) != 5 {
+		t.Errorf("tailLines(lines,10) len = %d, want 5", len(got))
+	}
+	if got := tailLines(lines, 0); got != nil {
+		t.Errorf("tailLines(lines,0) = %v, want nil", got)
+	}
+	if got := tailLines(nil, 3); got != nil {
+		t.Errorf("tailLines(nil,3) = %v, want nil", got)
+	}
+}
+
+func TestDaemonProcessMatches_CurrentProcess(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skip("cannot resolve test binary path")
+	}
+	// The recorded exe is this very test binary → ps comm must match.
+	if !daemonProcessMatches(daemonPID{PID: os.Getpid(), Exe: exe}) {
+		t.Errorf("daemonProcessMatches with own exe should be true (exe=%s)", exe)
+	}
+	// A made-up unrelated exe must not match (requires ps, present on darwin/linux test hosts).
+	if daemonProcessMatches(daemonPID{PID: os.Getpid(), Exe: "/definitely/not/jcproxy-zzz"}) {
+		t.Errorf("daemonProcessMatches with unrelated exe should be false")
+	}
+}
+
+func TestServiceConfig_RoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	writeServiceConfig(serviceConfig{Port: 9999, SkipValidation: true})
+	got, ok := readServiceConfig()
+	if !ok || got.Port != 9999 || !got.SkipValidation {
+		t.Fatalf("readServiceConfig() = %+v, ok=%v; want port 9999 skip=true", got, ok)
+	}
+
+	removeServiceConfig()
+	if _, ok := readServiceConfig(); ok {
+		t.Errorf("readServiceConfig after remove should miss")
+	}
+}
+
+func TestInstalledServiceConfig_LegacyPlistFallback(t *testing.T) {
+	if serviceUnitPath() == "" {
+		t.Skip("no service unit path on this platform")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Legacy install without service.json: config recovered from plist text.
+	path := serviceUnitPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	plist := `<plist><array><string>/usr/local/bin/jcproxy</string><string>serve</string>` +
+		`<string>--port</string><string>8080</string></array></plist>`
+	if err := os.WriteFile(path, []byte(plist), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, installed := installedServiceConfig()
+	if !installed {
+		t.Fatalf("installedServiceConfig should detect legacy plist install")
+	}
+	if cfg.Port != 8080 {
+		t.Errorf("cfg.Port = %d, want 8080", cfg.Port)
+	}
+	if cfg.SkipValidation {
+		t.Errorf("cfg.SkipValidation = true, want false (plist has no flag)")
+	}
+}

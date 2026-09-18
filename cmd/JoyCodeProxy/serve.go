@@ -57,11 +57,12 @@ var serveCmd = &cobra.Command{
   # 跳过凭据验证（用于测试）
   jcproxy serve --skip-validation`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if os.Getenv("_JOYCODE_DAEMON_CHILD") == "1" {
-			runAsDaemonChild()
-		}
+		isDaemonChild := os.Getenv("_JOYCODE_DAEMON_CHILD") == "1"
 
 		setupLogRotation()
+		if isDaemonChild {
+			log.Printf("[daemon-child] serve process started (PID %d)", os.Getpid())
+		}
 
 		client, err := resolveClient()
 		if err != nil {

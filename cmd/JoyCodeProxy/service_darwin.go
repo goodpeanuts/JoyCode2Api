@@ -10,7 +10,7 @@ import (
 	"text/template"
 )
 
-func installService(port int) error {
+func installService(cfg serviceConfig) error {
 	binPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("cannot determine binary path: %w", err)
@@ -27,19 +27,21 @@ func installService(port int) error {
 	}
 
 	plistData := struct {
-		Label      string
-		BinaryPath string
-		Port       int
-		HomeDir    string
-		StdoutLog  string
-		StderrLog  string
+		Label          string
+		BinaryPath     string
+		Port           int
+		HomeDir        string
+		StdoutLog      string
+		StderrLog      string
+		SkipValidation bool
 	}{
-		Label:      serviceLabel,
-		BinaryPath: binPath,
-		Port:       port,
-		HomeDir:    home,
-		StdoutLog:  filepath.Join(logPath, "stdout.log"),
-		StderrLog:  filepath.Join(logPath, "stderr.log"),
+		Label:          serviceLabel,
+		BinaryPath:     binPath,
+		Port:           cfg.Port,
+		HomeDir:        home,
+		StdoutLog:      filepath.Join(logPath, "stdout.log"),
+		StderrLog:      filepath.Join(logPath, "stderr.log"),
+		SkipValidation: cfg.SkipValidation,
 	}
 
 	tmpl := `<?xml version="1.0" encoding="UTF-8"?>
@@ -53,7 +55,8 @@ func installService(port int) error {
         <string>{{.BinaryPath}}</string>
         <string>serve</string>
         <string>--port</string>
-        <string>{{.Port}}</string>
+        <string>{{.Port}}</string>{{if .SkipValidation}}
+        <string>--skip-validation</string>{{end}}
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -96,7 +99,7 @@ func installService(port int) error {
 	fmt.Printf("Service installed and started.\n")
 	fmt.Printf("  Label:   %s\n", serviceLabel)
 	fmt.Printf("  Plist:   %s\n", plistPath)
-	fmt.Printf("  Port:    %d\n", port)
+	fmt.Printf("  Port:    %d\n", cfg.Port)
 	fmt.Printf("  Logs:    %s/\n", logPath)
 	return nil
 }
@@ -106,6 +109,7 @@ func uninstallService() error {
 	plistPath := filepath.Join(home, "Library", "LaunchAgents", plistName)
 
 	exec.Command("launchctl", "unload", plistPath).Run()
+	removeServiceConfig()
 
 	if _, err := os.Stat(plistPath); os.IsNotExist(err) {
 		fmt.Println("Service not installed (plist not found).")

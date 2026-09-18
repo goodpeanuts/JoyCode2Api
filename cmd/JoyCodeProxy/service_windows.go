@@ -24,7 +24,7 @@ func findNSSM() (string, error) {
 	return "", fmt.Errorf("nssm.exe not found in PATH or alongside the binary\n  Download from https://nssm.cc and place in PATH")
 }
 
-func installService(port int) error {
+func installService(cfg serviceConfig) error {
 	binPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("cannot determine binary path: %w", err)
@@ -46,7 +46,10 @@ func installService(port int) error {
 		return fmt.Errorf("cannot create log directory: %w", err)
 	}
 
-	appParams := fmt.Sprintf("serve --port %d --skip-validation", port)
+	appParams := fmt.Sprintf("serve --port %d", cfg.Port)
+	if cfg.SkipValidation {
+		appParams += " --skip-validation"
+	}
 
 	cmds := [][]string{
 		{nssmPath, "install", serviceName, binPath},
@@ -70,7 +73,7 @@ func installService(port int) error {
 	fmt.Printf("Service installed and started.\n")
 	fmt.Printf("  Name:   %s\n", serviceName)
 	fmt.Printf("  Binary: %s\n", binPath)
-	fmt.Printf("  Port:   %d\n", port)
+	fmt.Printf("  Port:   %d\n", cfg.Port)
 	fmt.Printf("\nManage with:\n")
 	fmt.Printf("  nssm status %s\n", serviceName)
 	fmt.Printf("  nssm stop %s\n", serviceName)
@@ -87,6 +90,7 @@ func uninstallService() error {
 	serviceName := serviceLabel
 
 	exec.Command(nssmPath, "stop", serviceName).Run()
+	removeServiceConfig()
 
 	out, err := exec.Command(nssmPath, "remove", serviceName, "confirm").CombinedOutput()
 	if err != nil {

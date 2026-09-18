@@ -10,7 +10,7 @@ import (
 	"text/template"
 )
 
-func installService(port int) error {
+func installService(cfg serviceConfig) error {
 	binPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("cannot determine binary path: %w", err)
@@ -26,15 +26,17 @@ func installService(port int) error {
 	}
 
 	unitData := struct {
-		Description string
-		BinaryPath  string
-		Port        int
-		HomeDir     string
+		Description    string
+		BinaryPath     string
+		Port           int
+		HomeDir        string
+		SkipValidation bool
 	}{
-		Description: "JoyCode API Proxy",
-		BinaryPath:  binPath,
-		Port:        port,
-		HomeDir:     os.Getenv("HOME"),
+		Description:    "JoyCode API Proxy",
+		BinaryPath:     binPath,
+		Port:           cfg.Port,
+		HomeDir:        os.Getenv("HOME"),
+		SkipValidation: cfg.SkipValidation,
 	}
 
 	unitTmpl := `[Unit]
@@ -43,7 +45,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={{.BinaryPath}} serve --port {{.Port}} --skip-validation
+ExecStart={{.BinaryPath}} serve --port {{.Port}}{{if .SkipValidation}} --skip-validation{{end}}
 Restart=always
 RestartSec=5
 Environment=HOME={{.HomeDir}}
@@ -80,13 +82,14 @@ WantedBy=default.target
 
 	fmt.Printf("Service installed and started.\n")
 	fmt.Printf("  Unit:   %s\n", unitPath)
-	fmt.Printf("  Port:   %d\n", port)
+	fmt.Printf("  Port:   %d\n", cfg.Port)
 	return nil
 }
 
 func uninstallService() error {
 	exec.Command("systemctl", "--user", "stop", serviceLabel+".service").Run()
 	exec.Command("systemctl", "--user", "disable", serviceLabel+".service").Run()
+	removeServiceConfig()
 
 	configDir := filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user")
 	unitPath := filepath.Join(configDir, serviceLabel+".service")
