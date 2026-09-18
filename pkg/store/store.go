@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -217,7 +217,7 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("create db directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -304,14 +304,22 @@ func (s *Store) migrate() error {
 	)`)
 
 	// Migration: add error_message column to request_logs
-	s.db.Exec("ALTER TABLE request_logs ADD COLUMN error_message TEXT DEFAULT ''")
+	if err := addColumnIfMissing(s.db, "request_logs", "error_message", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
 
 	// Migration: add token columns to request_logs
-	s.db.Exec("ALTER TABLE request_logs ADD COLUMN input_tokens INTEGER DEFAULT 0")
-	s.db.Exec("ALTER TABLE request_logs ADD COLUMN output_tokens INTEGER DEFAULT 0")
+	if err := addColumnIfMissing(s.db, "request_logs", "input_tokens", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(s.db, "request_logs", "output_tokens", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
 
 	// Migration: add display_order column to accounts
-	s.db.Exec("ALTER TABLE accounts ADD COLUMN display_order INTEGER DEFAULT 0")
+	if err := addColumnIfMissing(s.db, "accounts", "display_order", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
 
 	// Migration: add per-account credential fields
 	s.db.Exec("ALTER TABLE accounts ADD COLUMN login_type TEXT DEFAULT ''")
@@ -344,8 +352,18 @@ func (s *Store) migrate() error {
 	// Migration: initialize display_order for existing accounts
 	s.migrateDisplayOrder()
 
-	// Migration: add error_detail column to request_logs
+	// Migration: add error_detail column to request_logs.
 	s.db.Exec("ALTER TABLE request_logs ADD COLUMN error_detail TEXT DEFAULT ''")
+
+	// Indexes for request_logs (added here so they exist for both fresh and
+	// upgraded databases; CREATE INDEX IF NOT EXISTS is a no-op if present).
+	if _, err := s.db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_request_logs_api_key ON request_logs(api_key);
+		CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at);
+		CREATE INDEX IF NOT EXISTS idx_request_logs_created_at_api_key ON request_logs(created_at, api_key);
+	`); err != nil {
+		slog.Warn("store: create request_logs indexes failed", "error", err)
+	}
 
 	// Index for cursor-paginated account log queries
 	// (WHERE api_key=? [AND ...] ORDER BY id DESC). Created last so it survives
@@ -354,6 +372,21 @@ func (s *Store) migrate() error {
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_request_logs_api_key_id ON request_logs (api_key, id DESC)")
 
 	return nil
+}
+
+// addColumnIfMissing runs `ALTER TABLE ... ADD COLUMN` and ignores the
+// "duplicate column name" error that SQLite returns when the column already
+// exists. Any other error (disk full, locked DB, ...) is returned to the
+// caller so migrations don't silently fail.
+func addColumnIfMissing(db *sql.DB, table, column, typeDef string) error {
+	_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, typeDef))
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate: add column %s.%s: %w", table, column, err)
 }
 
 // migrateUserIDAsPK migrates the old accounts table (api_key as PK) to the new
@@ -1311,7 +1344,10 @@ func (s *Store) GetSettings() (map[string]string, error) {
 
 func (s *Store) GetSetting(key string) string {
 	var val string
-	s.db.QueryRow("SELECT value FROM settings WHERE key = ?", key).Scan(&val)
+	err := s.db.QueryRow("SELECT value FROM settings WHERE key = ?", key).Scan(&val)
+	if err != nil && err != sql.ErrNoRows {
+		slog.Error("store: get setting failed", "key", key, "error", err)
+	}
 	return val
 }
 
@@ -1519,19 +1555,30 @@ func (s *Store) GetStats() (*Stats, error) {
 		tf = "date(created_at, '" + mod + "') = date('now', '" + mod + "')"
 	}
 
-	err := s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE " + tf).Scan(&stats.TotalRequests)
+	// Single aggregate query for all per-day totals (replaces 7 round-trips).
+	err := s.db.QueryRow(`
+		SELECT
+			COUNT(*),
+			COALESCE(AVG(latency_ms), 0),
+			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN stream = 1 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0)
+		FROM request_logs WHERE `+tf).Scan(
+		&stats.TotalRequests, &stats.AvgLatencyMs, &stats.ErrorCount,
+		&stats.StreamCount, &stats.SuccessCount,
+		&stats.TotalInputTk, &stats.TotalOutputTk,
+	)
 	if err != nil {
-		slog.Error("store: get stats count failed", "error", err)
+		slog.Error("store: get stats aggregate failed", "error", err)
 		return nil, err
 	}
 
-	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE " + tf).Scan(&stats.AvgLatencyMs)
-	s.db.QueryRow("SELECT COUNT(*) FROM accounts").Scan(&stats.AccountsCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE " + tf + " AND status_code >= 400").Scan(&stats.ErrorCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE " + tf + " AND stream = 1").Scan(&stats.StreamCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE " + tf + " AND status_code < 400").Scan(&stats.SuccessCount)
-	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE " + tf).Scan(&stats.TotalInputTk)
-	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE " + tf).Scan(&stats.TotalOutputTk)
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM accounts").Scan(&stats.AccountsCount); err != nil {
+		slog.Error("store: get accounts count failed", "error", err)
+		return nil, err
+	}
 
 	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs WHERE " + tf + " AND model != '' GROUP BY model ORDER BY cnt DESC")
 	if err != nil {
@@ -1580,10 +1627,17 @@ func (s *Store) GetStats() (*Stats, error) {
 
 func (s *Store) GetAllTimeTotals() (*AllTimeTotals, error) {
 	t := &AllTimeTotals{}
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs").Scan(&t.TotalRequests)
-	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs").Scan(&t.TotalInputTk)
-	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs").Scan(&t.TotalOutputTk)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE status_code >= 400").Scan(&t.ErrorCount)
+	err := s.db.QueryRow(`
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0)
+		FROM request_logs`).Scan(&t.TotalRequests, &t.TotalInputTk, &t.TotalOutputTk, &t.ErrorCount)
+	if err != nil {
+		slog.Error("store: get all-time totals failed", "error", err)
+		return nil, err
+	}
 	return t, nil
 }
 
@@ -1873,7 +1927,7 @@ func (s *Store) CleanupOldLogs(days int) (int64, error) {
 		return 0, nil
 	}
 	result, err := s.db.Exec(
-		"DELETE FROM request_logs WHERE created_at < datetime('now', '-' || ? || ' days')",
+		"DELETE FROM request_logs WHERE created_at < datetime('now', 'localtime', '-' || ? || ' days')",
 		days,
 	)
 	if err != nil {

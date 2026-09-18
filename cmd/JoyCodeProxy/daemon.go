@@ -157,7 +157,7 @@ func startDaemon() error {
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcAttrDetached(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start daemon supervisor: %w", err)
@@ -192,7 +192,7 @@ func stopDaemon() error {
 		return nil
 	}
 
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
+	if err := terminateProcess(proc); err != nil {
 		removePIDFile()
 		fmt.Printf("Daemon process %d not responding: %v\n", pidData.PID, err)
 		return nil
@@ -207,7 +207,7 @@ func stopDaemon() error {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		proc.Signal(syscall.SIGKILL)
+		killProcess(proc)
 	}
 
 	removePIDFile()
@@ -228,7 +228,7 @@ func daemonStatusCmdRun() error {
 		return nil
 	}
 
-	if err := proc.Signal(syscall.Signal(0)); err != nil {
+	if !isProcessAlive(proc) {
 		fmt.Printf("Daemon PID %d — NOT running (stale PID file)\n", pidData.PID)
 		removePIDFile()
 		return nil
@@ -294,7 +294,7 @@ func RunSupervisor(port int) {
 	})
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
 	var mu sync.Mutex
 	delay := baseRestartDelay
@@ -328,7 +328,7 @@ func RunSupervisor(port int) {
 		cmd.Env = childEnv
 		cmd.Stdout = rw
 		cmd.Stderr = rw
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		setProcAttrDetached(cmd)
 
 		log.Printf("[supervisor] spawning child process")
 		startedAt := time.Now()
@@ -380,7 +380,7 @@ func RunSupervisor(port int) {
 
 		case sig := <-sigCh:
 			log.Printf("[supervisor] received %v — shutting down", sig)
-			cmd.Process.Signal(syscall.SIGTERM)
+			terminateProcess(cmd.Process)
 			cmd.Wait()
 			removePIDFile()
 			log.Printf("[supervisor] stopped")
@@ -435,7 +435,7 @@ func checkRunningDaemon() (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	if err := proc.Signal(syscall.Signal(0)); err != nil {
+	if !isProcessAlive(proc) {
 		removePIDFile()
 		return 0, false
 	}

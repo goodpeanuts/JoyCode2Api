@@ -1,13 +1,16 @@
 package openai
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/common"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
 )
@@ -110,46 +113,106 @@ func (s *Server) handleStreamChat(w http.ResponseWriter, r *http.Request, client
 		return
 	}
 
-	// Connect upstream and probe the first SSE line before committing response
-	// headers, so upstream failures surface as real HTTP error statuses
-	// instead of an empty 200 stream.
-	resp, err := s.connectStreamWithRetry(r, jcBody, client)
-	if err != nil {
-		slog.Error("chat stream upstream error", "model", model, "error", err)
-		msg := err.Error()
-		code := 500
-		if isTimeoutError(msg) {
-			code = 504
-			msg = "上游服务响应超时，请稍后重试。原始错误: " + msg
-		}
-		writeError(w, code, msg)
-		return
-	}
-	defer resp.Body.Close()
-
+	// Commit SSE headers early, then start a heartbeat goroutine. The upstream
+	// JoyCode API buffers the entire response before sending anything (TTFB can
+	// be 10–30s for reasoning models). Without keepalive, downstream clients
+	// (Claude Code, OpenAI clients) may time out during this gap. SSE comment
+	// lines (": ...") are part of the spec and ignored by compliant clients.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "close")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(200)
 
-	// Pipe JoyCode SSE response directly — already OpenAI-compatible format
-	buf := make([]byte, 4096)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			w.Write(buf[:n])
-			flusher.Flush()
-		}
-		if readErr != nil {
-			if readErr.Error() != "EOF" {
-				slog.Error("chat stream read error", "model", model, "error", readErr)
-				// Headers are already committed; emit an in-band error event so
-				// the client sees the failure instead of a silent truncation.
-				writeStreamErrorEvent(w, flusher, readErr.Error())
+	stopHeartbeat := make(chan struct{})
+	heartbeatDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		defer close(heartbeatDone)
+		for {
+			select {
+			case <-stopHeartbeat:
+				return
+			case <-ticker.C:
+				if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
+					return
+				}
+				flusher.Flush()
 			}
-			break
 		}
+	}()
+
+	// Connect upstream and probe the first SSE line so upstream failures and
+	// content filters surface as in-band error events instead of a silent 200
+	// stream. Headers are already committed, so errors are emitted in-band.
+	streamStart := time.Now()
+	resp, err := s.connectStreamWithRetry(r, jcBody, client)
+	if err != nil {
+		close(stopHeartbeat)
+		<-heartbeatDone
+		slog.Error("chat stream upstream error", "model", model, "error", err)
+		msg := err.Error()
+		if isTimeoutError(msg) {
+			msg = "上游服务响应超时，请稍后重试。原始错误: " + msg
+		}
+		writeStreamErrorEvent(w, flusher, msg)
+		return
+	}
+	defer resp.Body.Close()
+	close(stopHeartbeat)
+	<-heartbeatDone
+	slog.Info("stream: connected to upstream", "model", model, "ttfb_ms", time.Since(streamStart).Milliseconds())
+
+	// Pipe JoyCode SSE response line-by-line — already OpenAI-compatible format.
+	// Using bufio.Scanner (not raw Read) ensures each SSE event is forwarded
+	// as soon as it arrives, without buffering multiple events into one write.
+	// Also extract usage tokens from the final chunk for dashboard stats.
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var inTk, outTk int
+	sawDone := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			// Empty line separates SSE events; forward as-is.
+			w.Write([]byte("\n"))
+			flusher.Flush()
+			continue
+		}
+		if strings.Contains(line, "[DONE]") {
+			sawDone = true
+		}
+		w.Write([]byte(line))
+		w.Write([]byte("\n"))
+		flusher.Flush()
+		// Extract usage from data lines (the final chunk carries usage stats)
+		if strings.HasPrefix(line, "data: ") && !strings.Contains(line, "[DONE]") {
+			var chunk struct {
+				Usage *struct {
+					PromptTokens     int `json:"prompt_tokens"`
+					CompletionTokens int `json:"completion_tokens"`
+				} `json:"usage"`
+			}
+			if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &chunk) == nil && chunk.Usage != nil {
+				inTk = chunk.Usage.PromptTokens
+				outTk = chunk.Usage.CompletionTokens
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Error("chat stream read error", "model", model, "error", err)
+	}
+	// Ensure the stream terminates with [DONE]. Some upstream responses omit it
+	// (e.g. premature close, certain error paths), leaving clients like
+	// CherryStudio hanging in "generating" state. Always send a final [DONE].
+	if !sawDone {
+		slog.Warn("stream ended without [DONE], sending terminator", "model", model)
+		w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+	}
+	if inTk > 0 || outTk > 0 {
+		store.SetTokenUsage(r, inTk, outTk)
 	}
 }
 
@@ -167,9 +230,5 @@ func writeStreamErrorEvent(w http.ResponseWriter, flusher http.Flusher, msg stri
 }
 
 func isTimeoutError(msg string) bool {
-	lower := strings.ToLower(msg)
-	return strings.Contains(lower, "context deadline exceeded") ||
-		strings.Contains(lower, "client.timeout exceeded") ||
-		strings.Contains(lower, "deadline exceeded") ||
-		strings.Contains(lower, "i/o timeout")
+	return common.IsTimeoutError(errors.New(msg))
 }

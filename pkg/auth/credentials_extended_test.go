@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"testing"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 func TestLoadFromSystem_NonDarwin(t *testing.T) {
@@ -189,7 +189,7 @@ func TestLoadFromSystem_DatabaseMissingKey(t *testing.T) {
 	}
 
 	dbPath := filepath.Join(dbDir, "state.vscdb")
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatalf("failed to create sqlite database: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestLoadFromSystem_LinuxVSCodePlugin(t *testing.T) {
 func TestLoadFromSystem_VSCodeStateDBEnv(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "state.vscdb")
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -342,7 +342,7 @@ func createTestDB(t *testing.T, baseDir string, jsonValue string) {	t.Helper()
 	}
 
 	dbPath := filepath.Join(dbDir, "state.vscdb")
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatalf("failed to create sqlite database: %v", err)
 	}
@@ -376,7 +376,7 @@ func createVSCodeTestDB(t *testing.T, baseDir string, jsonValue string) {
 	}
 
 	dbPath := filepath.Join(dbDir, "state.vscdb")
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatalf("failed to create sqlite database: %v", err)
 	}
@@ -409,7 +409,7 @@ func createLinuxVSCodeTestDB(t *testing.T, baseDir string, jsonValue string) {
 	}
 
 	dbPath := filepath.Join(dbDir, "state.vscdb")
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatalf("failed to create sqlite database: %v", err)
 	}

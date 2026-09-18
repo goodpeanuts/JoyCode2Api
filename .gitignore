@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+/JoyCode2Api
 /JoyCodeProxy
 
 # Go build cache
@@ -17,7 +18,8 @@ dist/
 out/
 joycode_proxy_bin
 joycode_proxy_bin.bak
-cmd/JoyCodeProxy/JoyCodeProxy
+cmd/JoyCode2Api/JoyCode2Api
+cmd/JoyCode2Api/JoyCodeProxy
 joycode_proxy_darwin_*
 joycode_proxy_linux_*
 joycode-proxy

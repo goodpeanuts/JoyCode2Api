@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Alert, Card, Row, Col, Statistic, Typography, Spin, Tag, Select, Button,
+  Alert, Card, Row, Col, Statistic, Typography, Skeleton, Tag, Select, Button,
   message, Space, Table, Badge, Segmented, Popconfirm, Tooltip, Divider,
   DatePicker, Descriptions,
 } from 'antd';
@@ -40,7 +40,16 @@ const FALLBACK_MODELS: ModelInfo[] = [
 
 const isClaudeModel = (model?: string) => model === 'Claude-Opus-4.7';
 
-const PIE_COLORS = ['#00b578', '#36cfc9', '#73d13d', '#95de64', '#1890ff', '#13c2c2', '#eb2f96', '#fa8c16'];
+const PIE_COLORS = ['#22C55E', '#3B82F6', '#F59E0B', '#EF4444', '#A855F7', '#06B6D4', '#EC4899', '#84CC16'];
+
+const CHART_COLORS = {
+  primary: '#22C55E',
+  secondary: '#3B82F6',
+  danger: '#EF4444',
+  warning: '#F59E0B',
+  grid: '#1F2937',
+  axis: '#475569',
+};
 
 const statusTag = (code: number) => {
   if (code >= 200 && code < 300) return <Tag color="success">{code}</Tag>;
@@ -241,7 +250,17 @@ const AccountDetail: React.FC = () => {
     }
   };
 
-  if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
+  if (loading) {
+    return (
+      <div className="jc-page">
+        <Skeleton.Button active block style={{ height: 80, marginBottom: 16, borderRadius: 10 }} />
+        <Row gutter={[16, 16]}>
+          <Col xs={24} md={12}><Card size="small"><Skeleton active paragraph={{ rows: 5 }} /></Card></Col>
+          <Col xs={24} md={12}><Card size="small"><Skeleton active paragraph={{ rows: 5 }} /></Card></Col>
+        </Row>
+      </div>
+    );
+  }
   if (!account) return <div style={{ textAlign: 'center', padding: 100 }}>账号不存在</div>;
 
   // Build model options: use dynamic models if available, otherwise fallback
@@ -341,22 +360,22 @@ const AccountDetail: React.FC = () => {
   ];
 
   return (
-    <div>
+    <div className="jc-page">
       {/* Header */}
       <div style={{
         marginBottom: 20, display: 'flex', alignItems: 'center', gap: 12,
-        borderBottom: '1px solid #f0f0f0', paddingBottom: 16,
+        borderBottom: '1px solid #1F2937', paddingBottom: 16, flexWrap: 'wrap',
       }}>
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/accounts')} type="text" />
-        <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ flex: 1, minWidth: 240 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <Typography.Title level={4} style={{ margin: 0 }}>{accountDisplayName(account)}</Typography.Title>
             {account.is_default && <Tag color="blue">默认</Tag>}
           </div>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {account.user_id} · 创建于 {account.created_at?.slice(0, 10) || '-'}
           </Typography.Text>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>Token:</Typography.Text>
             <Typography.Text code copyable style={{ fontSize: 11 }}>
               {account.api_token}
@@ -364,8 +383,8 @@ const AccountDetail: React.FC = () => {
           </div>
           <div style={{ marginTop: 6 }}>
             {activeSessions > 0 ? (
-              <Badge status="processing" color="blue" text={
-                <Typography.Text style={{ fontSize: 12, color: '#1890ff' }}>
+              <Badge status="processing" color="#22C55E" text={
+                <Typography.Text style={{ fontSize: 12, color: '#22C55E' }}>
                   {activeSessions} 个活跃会话
                 </Typography.Text>
               } />
@@ -376,9 +395,9 @@ const AccountDetail: React.FC = () => {
             )}
           </div>
         </div>
-        <Space>
+        <Space wrap>
           <Tooltip title="此模型的用途仅限生成下方的快速启动命令。实际请求中的模型由客户端指定（如 ANTHROPIC_MODEL 环境变量），始终优先于本设置。模型列表来自 JoyCode API 支持的模型 + 服务器动态获取的扩展模型。">
-            <QuestionCircleOutlined style={{ color: '#999', cursor: 'help' }} />
+            <QuestionCircleOutlined style={{ color: '#94A3B8', cursor: 'help' }} />
           </Tooltip>
           <Select
             style={{ width: 220 }}
@@ -404,7 +423,7 @@ const AccountDetail: React.FC = () => {
           />
           {isClaudeModel(account.default_model) && (
             <Tooltip title="Claude 模型需要本机登录 JoyCode IDE">
-              <InfoCircleOutlined style={{ color: '#faad14' }} />
+              <InfoCircleOutlined style={{ color: '#F59E0B' }} />
             </Tooltip>
           )}
           <Button size="small" onClick={async () => {
@@ -455,16 +474,14 @@ const AccountDetail: React.FC = () => {
             快速启动命令
           </Typography.Text>
           <Tooltip title="模型优先级：客户端指定的模型（如启动命令中的 ANTHROPIC_MODEL）始终优先。上方设置的「默认模型」仅用于生成这些命令中的模型参数。如果你手动修改了启动命令中的模型，以你手动指定的为准。">
-            <Typography.Text style={{ fontSize: 12, color: '#999', cursor: 'help' }}>
+            <Typography.Text style={{ fontSize: 12, color: '#94A3B8', cursor: 'help' }}>
               <InfoCircleOutlined /> 模型优先级说明
             </Typography.Text>
           </Tooltip>
         </div>
         <Row gutter={[16, 12]}>
           <Col xs={24} md={12}>
-            <div style={{
-              background: '#f6f5f0', borderRadius: 6, padding: '10px 14px',
-            }}>
+            <div className="jc-code-block">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <SvgClaudeCode />
@@ -480,15 +497,13 @@ const AccountDetail: React.FC = () => {
                   />
                 </CommandTooltip>
               </div>
-              <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: 11, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: '#333' }}>
+              <pre style={{ margin: 0, fontFamily: 'inherit', fontSize: 11, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: '#cdd6f4' }}>
 {buildClaudeCodeCmd(account.api_token, account.default_model || undefined)}
               </pre>
             </div>
           </Col>
           <Col xs={24} md={12}>
-            <div style={{
-              background: '#f0faf5', borderRadius: 6, padding: '10px 14px',
-            }}>
+            <div className="jc-code-block">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <SvgCodex />
@@ -504,7 +519,7 @@ const AccountDetail: React.FC = () => {
                   />
                 </CommandTooltip>
               </div>
-              <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: 11, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: '#333' }}>
+              <pre style={{ margin: 0, fontFamily: 'inherit', fontSize: 11, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: '#cdd6f4' }}>
 {buildCodexCmd(account.api_token, account.default_model || undefined)}
               </pre>
             </div>
@@ -515,15 +530,15 @@ const AccountDetail: React.FC = () => {
       {/* Live session status */}
       <Card
         size="small"
-        style={{ marginBottom: 16, borderRadius: 8, background: activeSessions > 0 ? '#f6ffed' : '#fafafa', border: activeSessions > 0 ? '1px solid #b7eb8f' : undefined }}
+        style={{ marginBottom: 16, background: activeSessions > 0 ? 'rgba(34, 197, 94, 0.06)' : undefined, borderColor: activeSessions > 0 ? 'rgba(34, 197, 94, 0.3)' : undefined }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <Badge status={activeSessions > 0 ? 'processing' : 'default'} />
           <Typography.Text strong style={{ fontSize: 13 }}>
             实时状态
           </Typography.Text>
           <Typography.Text style={{ fontSize: 13 }}>
-            当前有 <Typography.Text strong style={{ fontSize: 16, color: activeSessions > 0 ? '#1890ff' : undefined }}>{activeSessions}</Typography.Text> 个活跃连接
+            当前有 <Typography.Text strong style={{ fontSize: 16, color: activeSessions > 0 ? '#22C55E' : undefined }}>{activeSessions}</Typography.Text> 个活跃连接
           </Typography.Text>
           {activeSessions > 0 && (
             <Tag color="blue">请求处理中</Tag>
@@ -539,13 +554,13 @@ const AccountDetail: React.FC = () => {
         <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
           <Col xs={24} md={12}>
             <Card
-              title={<span><ApiOutlined style={{ marginRight: 6 }} />请求统计</span>}
               size="small"
-              style={{ borderRadius: 8, height: '100%' }}
+              style={{ height: '100%' }}
+              title={<span className="jc-section-title"><ApiOutlined />请求统计</span>}
             >
               <Row gutter={[8, 12]}>
                 <Col span={12}>
-                  <Statistic title="今日请求" value={stats.total_requests} valueStyle={{ fontSize: 20, color: '#00b578' }} prefix={<ApiOutlined />} />
+                  <Statistic title="今日请求" value={stats.total_requests} valueStyle={{ fontSize: 20, color: CHART_COLORS.primary }} prefix={<ApiOutlined />} />
                 </Col>
                 <Col span={12}>
                   <Statistic title="累计请求" value={stats.all_time?.total_requests ?? 0} valueStyle={{ fontSize: 20 }} />
@@ -555,7 +570,7 @@ const AccountDetail: React.FC = () => {
                     title="今日成功"
                     value={stats.success_count}
                     prefix={<CheckCircleOutlined />}
-                    valueStyle={{ fontSize: 18, color: '#52c41a' }}
+                    valueStyle={{ fontSize: 18, color: CHART_COLORS.primary }}
                   />
                   <Typography.Text type="secondary" style={{ fontSize: 11 }}>
                     占比 {stats.total_requests > 0 ? formatPercent(stats.success_count, stats.total_requests) : '100%'}
@@ -566,7 +581,7 @@ const AccountDetail: React.FC = () => {
                     title="今日失败"
                     value={stats.error_count}
                     prefix={<CloseCircleOutlined />}
-                    valueStyle={{ fontSize: 18, color: stats.error_count > 0 ? '#ff4d4f' : '#52c41a' }}
+                    valueStyle={{ fontSize: 18, color: stats.error_count > 0 ? CHART_COLORS.danger : CHART_COLORS.primary }}
                   />
                   <Typography.Text type="secondary" style={{ fontSize: 11 }}>
                     占比 {formatPercent(stats.error_count, stats.total_requests)}
@@ -592,7 +607,7 @@ const AccountDetail: React.FC = () => {
                         value={Math.round(stats.avg_latency_ms)}
                         suffix="ms"
                         prefix={<ThunderboltOutlined />}
-                        valueStyle={{ fontSize: 16, color: stats.avg_latency_ms < 500 ? '#52c41a' : stats.avg_latency_ms < 1500 ? '#faad14' : '#ff4d4f' }}
+                        valueStyle={{ fontSize: 16, color: stats.avg_latency_ms < 500 ? CHART_COLORS.primary : stats.avg_latency_ms < 1500 ? CHART_COLORS.warning : CHART_COLORS.danger }}
                       />
                     </Col>
                   </Row>
@@ -603,16 +618,16 @@ const AccountDetail: React.FC = () => {
 
           <Col xs={24} md={12}>
             <Card
-              title={<span><FireOutlined style={{ marginRight: 6 }} />Token 消费</span>}
               size="small"
-              style={{ borderRadius: 8, height: '100%' }}
+              style={{ height: '100%' }}
+              title={<span className="jc-section-title"><FireOutlined />Token 消费</span>}
             >
               <Row gutter={[8, 12]}>
                 <Col span={12}>
                   <Statistic
                     title="今日 Token"
                     value={fmtTokens(stats.total_input_tokens + stats.total_output_tokens)}
-                    valueStyle={{ fontSize: 20, color: '#389e0d' }}
+                    valueStyle={{ fontSize: 20, color: CHART_COLORS.secondary }}
                   />
                 </Col>
                 <Col span={12}>
@@ -679,29 +694,49 @@ const AccountDetail: React.FC = () => {
         return (
         <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
           <Col xs={24} lg={12}>
-            <Card title="24 小时请求趋势" size="small">
+            <Card size="small" title="24 小时请求趋势">
               <ResponsiveContainer width="100%" height={200}>
                 <AreaChart data={hourlyChartData} margin={{ left: -10 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} interval={2} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <RTooltip />
-                  <Area type="monotone" dataKey="count" name="请求数" stroke="#00b578" fill="#00b578" fillOpacity={0.15} />
-                  <Area type="monotone" dataKey="errors" name="错误数" stroke="#ff4d4f" fill="#ff4d4f" fillOpacity={0.15} />
+                  <defs>
+                    <linearGradient id="gradDetailReq" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={CHART_COLORS.primary} stopOpacity={0.4} />
+                      <stop offset="100%" stopColor={CHART_COLORS.primary} stopOpacity={0} />
+                    </linearGradient>
+                    <linearGradient id="gradDetailErr" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={CHART_COLORS.danger} stopOpacity={0.3} />
+                      <stop offset="100%" stopColor={CHART_COLORS.danger} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke={CHART_COLORS.grid} />
+                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: CHART_COLORS.axis }} interval={2} stroke={CHART_COLORS.grid} />
+                  <YAxis tick={{ fontSize: 11, fill: CHART_COLORS.axis }} stroke={CHART_COLORS.grid} />
+                  <RTooltip contentStyle={{ background: '#0E1223', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }} labelStyle={{ color: '#94A3B8' }} itemStyle={{ color: '#F8FAFC' }} />
+                  <Area type="monotone" dataKey="count" name="请求数" stroke={CHART_COLORS.primary} fill="url(#gradDetailReq)" strokeWidth={2} />
+                  <Area type="monotone" dataKey="errors" name="错误数" stroke={CHART_COLORS.danger} fill="url(#gradDetailErr)" strokeWidth={1.5} />
                 </AreaChart>
               </ResponsiveContainer>
             </Card>
           </Col>
           <Col xs={24} lg={12}>
-            <Card title="24 小时 Token 消耗趋势" size="small">
+            <Card size="small" title="24 小时 Token 消耗趋势">
               <ResponsiveContainer width="100%" height={200}>
                 <AreaChart data={hourlyChartData} margin={{ left: -10 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} interval={2} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <RTooltip />
-                  <Area type="monotone" dataKey="input_tokens" name="输入 Token" stroke="#1890ff" fill="#1890ff" fillOpacity={0.15} />
-                  <Area type="monotone" dataKey="output_tokens" name="输出 Token" stroke="#73d13d" fill="#73d13d" fillOpacity={0.15} />
+                  <defs>
+                    <linearGradient id="gradDetailIn" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={CHART_COLORS.secondary} stopOpacity={0.35} />
+                      <stop offset="100%" stopColor={CHART_COLORS.secondary} stopOpacity={0} />
+                    </linearGradient>
+                    <linearGradient id="gradDetailOut" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={CHART_COLORS.primary} stopOpacity={0.35} />
+                      <stop offset="100%" stopColor={CHART_COLORS.primary} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke={CHART_COLORS.grid} />
+                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: CHART_COLORS.axis }} interval={2} stroke={CHART_COLORS.grid} />
+                  <YAxis tick={{ fontSize: 11, fill: CHART_COLORS.axis }} stroke={CHART_COLORS.grid} />
+                  <RTooltip contentStyle={{ background: '#0E1223', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }} labelStyle={{ color: '#94A3B8' }} itemStyle={{ color: '#F8FAFC' }} />
+                  <Area type="monotone" dataKey="input_tokens" name="输入 Token" stroke={CHART_COLORS.secondary} fill="url(#gradDetailIn)" strokeWidth={2} />
+                  <Area type="monotone" dataKey="output_tokens" name="输出 Token" stroke={CHART_COLORS.primary} fill="url(#gradDetailOut)" strokeWidth={2} />
                 </AreaChart>
               </ResponsiveContainer>
             </Card>
@@ -715,14 +750,14 @@ const AccountDetail: React.FC = () => {
         <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
           {stats.by_model.length > 0 && (
             <Col xs={24} lg={14}>
-              <Card title={<><FireOutlined /> 模型使用分布</>} size="small">
+              <Card size="small" title={<span className="jc-section-title"><FireOutlined />模型使用分布</span>}>
                 <ResponsiveContainer width="100%" height={200}>
                   <BarChart data={stats.by_model} layout="vertical" margin={{ left: 10 }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis type="number" />
-                    <YAxis dataKey="model" type="category" width={100} tick={{ fontSize: 11 }} />
-                    <RTooltip />
-                    <Bar dataKey="count" name="请求数" fill="#00b578" radius={[0, 4, 4, 0]} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={CHART_COLORS.grid} />
+                    <XAxis type="number" tick={{ fill: CHART_COLORS.axis }} stroke={CHART_COLORS.grid} />
+                    <YAxis dataKey="model" type="category" width={100} tick={{ fontSize: 11, fill: CHART_COLORS.axis }} stroke={CHART_COLORS.grid} />
+                    <RTooltip contentStyle={{ background: '#0E1223', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }} labelStyle={{ color: '#94A3B8' }} itemStyle={{ color: '#F8FAFC' }} />
+                    <Bar dataKey="count" name="请求数" fill={CHART_COLORS.primary} radius={[0, 4, 4, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </Card>
@@ -730,7 +765,7 @@ const AccountDetail: React.FC = () => {
           )}
           {endpointData.length > 0 && (
             <Col xs={24} lg={10}>
-              <Card title={<><GlobalOutlined /> 端点调用分布</>} size="small">
+              <Card size="small" title={<span className="jc-section-title"><GlobalOutlined />端点调用分布</span>}>
                 <ResponsiveContainer width="100%" height={200}>
                   <PieChart>
                     <Pie
@@ -741,13 +776,13 @@ const AccountDetail: React.FC = () => {
                       cy="50%"
                       outerRadius={70}
                       label={({ name, percent }: any) => `${name || ''} ${((percent || 0) * 100).toFixed(0)}%`}
-                      labelLine={{ strokeWidth: 1 }}
+                      labelLine={{ stroke: '#475569', strokeWidth: 1 }}
                     >
                       {endpointData.map((_, i) => (
                         <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                       ))}
                     </Pie>
-                    <RTooltip />
+                    <RTooltip contentStyle={{ background: '#0E1223', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }} labelStyle={{ color: '#94A3B8' }} itemStyle={{ color: '#F8FAFC' }} />
                   </PieChart>
                 </ResponsiveContainer>
               </Card>
@@ -758,14 +793,14 @@ const AccountDetail: React.FC = () => {
 
       {/* Request logs */}
       <Card
+        size="small"
         title={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <ClockCircleOutlined />
+            <ClockCircleOutlined style={{ color: '#22C55E' }} />
             <span>请求日志</span>
             <Tag>已加载 {logs.length} 条</Tag>
           </div>
         }
-        size="small"
       >
         <Row gutter={[8, 8]} style={{ marginBottom: 12 }}>
           <Col>
@@ -839,11 +874,11 @@ const AccountDetail: React.FC = () => {
                   <div style={{
                     marginBottom: 10,
                     padding: '10px 12px',
-                    border: '1px solid #ffccc7',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
                     borderRadius: 6,
-                    background: '#fff2f0',
+                    background: 'rgba(239, 68, 68, 0.08)',
                   }}>
-                    <Typography.Text strong style={{ display: 'block', marginBottom: 6, color: '#cf1322' }}>
+                    <Typography.Text strong style={{ display: 'block', marginBottom: 6, color: CHART_COLORS.danger }}>
                       错误详情
                     </Typography.Text>
                     {(() => {

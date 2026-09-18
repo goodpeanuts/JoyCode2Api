@@ -4,100 +4,152 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.7.0)'
+        required: true
 
 permissions:
   contents: write
 
+env:
+  BINARY_NAME: JoyCodeProxy
+
 jobs:
-  build:
-    name: Build ${{ matrix.asset }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            asset: joycode-proxy-darwin-arm64
-          - os: ubuntu-latest
-            asset: joycode-proxy-linux-amd64
+  build-frontend:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-node@v4
         with:
-          go-version: '1.25'
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
 
       - name: Build frontend
         working-directory: web
         run: |
-          npm install
+          npm ci
           npm run build
 
-      - name: Build binary
+      - name: Verify frontend output
+        run: test -f cmd/JoyCodeProxy/static/index.html
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-static
+          path: cmd/JoyCodeProxy/static/
+          retention-days: 1
+
+  build-binaries:
+    needs: build-frontend
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+          - goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - goos: windows
+            goarch: amd64
+            suffix: windows-amd64
+            ext: .exe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-static
+          path: cmd/JoyCodeProxy/static/
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Resolve version
+        id: version
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "num=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build ${{ matrix.suffix }}
         env:
-          CGO_ENABLED: '1'
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
           go build -trimpath \
-            -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME}" \
-            -o "${{ matrix.asset }}" ./cmd/JoyCodeProxy/
-          chmod +x "${{ matrix.asset }}"
+            -ldflags "-s -w -X main.Version=${{ steps.version.outputs.num }}" \
+            -o "dist/${{ env.BINARY_NAME }}-${{ matrix.suffix }}${{ matrix.ext }}" \
+            ./cmd/JoyCodeProxy/
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
+          name: binary-${{ matrix.suffix }}
+          path: dist/
+          retention-days: 1
 
   release:
-    name: Publish Release
-    needs: build
+    needs: build-binaries
     runs-on: ubuntu-latest
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: dist
+          pattern: binary-*
+          path: dist/
           merge-multiple: true
 
-      - name: Create Release
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum ${{ env.BINARY_NAME }}-* > checksums-sha256.txt
+
+      - name: Resolve version
+        id: version
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
-          generate_release_notes: true
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "${{ env.BINARY_NAME }} ${{ steps.version.outputs.tag }}"
           body: |
-            ## 一键安装（推荐）
+            ## ${{ env.BINARY_NAME }} ${{ steps.version.outputs.tag }}
 
-            macOS / Linux 一条命令装好，安装为全局命令 `jcproxy`：
+            ### Downloads
+            | Platform | File |
+            |----------|------|
+            | macOS (Apple Silicon) | `${{ env.BINARY_NAME }}-darwin-arm64` |
+            | macOS (Intel) | `${{ env.BINARY_NAME }}-darwin-amd64` |
+            | Linux (x86_64) | `${{ env.BINARY_NAME }}-linux-amd64` |
+            | Windows (x86_64) | `${{ env.BINARY_NAME }}-windows-amd64.exe` |
 
-            ```
-            curl -fsSL https://raw.githubusercontent.com/goodpeanuts/JoyCode2Api/erp/install.sh | bash
-            ```
+            ### Quick Start
+            ```bash
+            # macOS / Linux
+            chmod +x JoyCodeProxy-<platform>
+            ./JoyCodeProxy-<platform> serve
 
-            装完直接 `jcproxy serve` 启动，`jcproxy uninstall` 卸载。
-
-            ## 手动下载
-
-            或下载下方对应平台的二进制文件，命令行直接运行：
-
-            **macOS (Apple Silicon)**
-            ```
-            chmod +x joycode-proxy-darwin-arm64
-            ./joycode-proxy-darwin-arm64 serve
-            ```
-            > 若被 Gatekeeper 拦下（提示"无法验证"或"已损坏"），执行 `xattr -d com.apple.quarantine joycode-proxy-darwin-arm64` 解除隔离即可。
-
-            **Linux (amd64)**
-            ```
-            chmod +x joycode-proxy-linux-amd64
-            ./joycode-proxy-linux-amd64 serve
+            # Windows
+            JoyCodeProxy-windows-amd64.exe serve
             ```
 
-            > 可以把下载的文件 `mv` 成 `jcproxy` 放进 PATH，方便直接敲 `jcproxy` 使用。
-
-            默认监听 `0.0.0.0:34891`，浏览器打开该地址进入控制台。后台常驻可用 `daemon start`（崩溃自动重启）或 `service install`（开机自启）。
+            ### Verify checksum
+            ```bash
+            sha256sum -c checksums-sha256.txt
+            ```
+          files: dist/*

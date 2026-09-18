@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/auth"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/configref"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
@@ -96,6 +96,10 @@ var (
 const ghStarsCacheTTL = 1 * time.Hour
 const ghRepo = "goodpeanuts/JoyCode2Api"
 
+// ghClient has a timeout so a slow/unreachable GitHub API can't hold a
+// handler goroutine indefinitely.
+var ghClient = &http.Client{Timeout: 10 * time.Second}
+
 func (h *Handler) handleGitHubStars(w http.ResponseWriter, r *http.Request) {
 	setCors(w)
 	if r.Method == http.MethodOptions {
@@ -116,7 +120,7 @@ func (h *Handler) handleGitHubStars(w http.ResponseWriter, r *http.Request) {
 	}
 	ghStarsMu.Unlock()
 
-	resp, err := http.Get("https://api.github.com/repos/" + ghRepo)
+	resp, err := ghClient.Get("https://api.github.com/repos/" + ghRepo)
 	if err != nil {
 		slog.Warn("github stars fetch failed", "error", err)
 		ghStarsMu.Lock()
@@ -216,7 +220,7 @@ func (h *Handler) ServeStatic(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]interface{}{
 			"error": map[string]string{
 				"type":    "invalid_request_error",
-				"message": fmt.Sprintf("%s %s not found. JoyCodeProxy serves the API under /v1/. Set base_url to http://<host>:<port>/v1", r.Method, path),
+				"message": fmt.Sprintf("%s %s not found. JoyCode2Api serves the API under /v1/. Set base_url to http://<host>:<port>/v1", r.Method, path),
 			},
 		})
 		return
@@ -491,7 +495,9 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	setCors(w)
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("writeJSON: encode failed", "error", err)
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
@@ -571,6 +577,14 @@ func (h *Handler) addAccount(w http.ResponseWriter, r *http.Request) {
 	isDefault := false
 	if body.IsDefault != nil {
 		isDefault = *body.IsDefault
+	}
+	// If no explicit preference and there are no accounts yet, make this the
+	// default account (matches the QR/OAuth/auto-login paths' behavior so the
+	// "joycode" fallback key always routes to a real account).
+	if !isDefault {
+		if existing, _ := h.store.ListAccounts(); len(existing) == 0 {
+			isDefault = true
+		}
 	}
 
 	if err := h.store.AddAccount(body.UserID, body.PtKey, body.Nickname, isDefault, body.DefaultModel, nil); err != nil {
@@ -1401,14 +1415,23 @@ func (h *Handler) handleClearJoyCodeSession(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	db, err := sql.Open("sqlite3", dbPath+"?mode=rw")
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "无法打开 JoyCode 数据库: "+err.Error())
 		return
 	}
 	defer db.Close()
 
-	result, err := db.Exec("DELETE FROM ItemTable WHERE key IN ('JoyCoder.IDE', 'joycode.storageUser')")
+	// Use a transaction so the DELETE + UPDATE are atomic; a failure in the
+	// middle won't leave the JoyCode state DB half-cleaned.
+	tx, err := db.Begin()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "开启事务失败: "+err.Error())
+		return
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec("DELETE FROM ItemTable WHERE key IN ('JoyCoder.IDE', 'joycode.storageUser')")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "清除会话失败: "+err.Error())
 		return
@@ -1417,15 +1440,21 @@ func (h *Handler) handleClearJoyCodeSession(w http.ResponseWriter, r *http.Reque
 
 	// Also clear jdhLoginInfo from JoyCode.joycoder-editor to prevent auto-restore
 	var editorVal string
-	if err := db.QueryRow("SELECT value FROM ItemTable WHERE key = 'JoyCode.joycoder-editor'").Scan(&editorVal); err == nil {
+	if err := tx.QueryRow("SELECT value FROM ItemTable WHERE key = 'JoyCode.joycoder-editor'").Scan(&editorVal); err == nil {
 		var editor map[string]interface{}
 		if json.Unmarshal([]byte(editorVal), &editor) == nil {
 			delete(editor, "jdhLoginInfo")
 			if newVal, err := json.Marshal(editor); err == nil {
-				db.Exec("UPDATE ItemTable SET value = ? WHERE key = 'JoyCode.joycoder-editor'", string(newVal))
-				n++
+				if _, err := tx.Exec("UPDATE ItemTable SET value = ? WHERE key = 'JoyCode.joycoder-editor'", string(newVal)); err == nil {
+					n++
+				}
 			}
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "提交事务失败: "+err.Error())
+		return
 	}
 
 	slog.Info("clear-joycode-session: cleared", "rows_affected", n)

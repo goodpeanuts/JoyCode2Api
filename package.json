@@ -1,5 +1,5 @@
 {
-  "name": "JoyCode2Api",
+  "name": "JoyCodeProxy",
   "private": true,
   "scripts": {
     "docs:dev": "vitepress dev docs",

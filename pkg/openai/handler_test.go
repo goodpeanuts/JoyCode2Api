@@ -393,7 +393,11 @@ func TestChat_NonStreamUpstreamErrorBodyReturns500(t *testing.T) {
 	}
 }
 
-func TestChat_StreamUpstreamErrorFirstLineReturns500(t *testing.T) {
+// TestChat_StreamUpstreamErrorInBand verifies that an upstream error detected
+// while probing the stream surfaces as an in-band SSE error event. Response
+// headers are committed before the upstream connect (needed for the heartbeat
+// keepalive), so the status is 200 and the failure is reported in the body.
+func TestChat_StreamUpstreamErrorInBand(t *testing.T) {
 	frontend := setupChatServerWithBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
@@ -406,17 +410,20 @@ func TestChat_StreamUpstreamErrorFirstLineReturns500(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 500 {
+	if resp.StatusCode != 200 {
 		raw, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 500, got %d: %s", resp.StatusCode, raw)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
 	}
 	ct := resp.Header.Get("Content-Type")
-	if !strings.Contains(ct, "application/json") {
-		t.Errorf("Content-Type = %q, want application/json (error, not SSE)", ct)
+	if !strings.Contains(ct, "text/event-stream") {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
 	}
 	raw, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(raw), "1032") {
-		t.Errorf("error body should contain upstream code 1032, got: %s", raw)
+		t.Errorf("stream body should carry upstream code 1032, got: %s", raw)
+	}
+	if !strings.Contains(string(raw), "[DONE]") {
+		t.Errorf("stream body should terminate with [DONE], got: %s", raw)
 	}
 }
 

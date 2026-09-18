@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 // Credentials holds JoyCode authentication data.
@@ -97,6 +97,18 @@ func LoadFromSystem() (*Credentials, error) {
 			vscodeDB := filepath.Join(home,
 				".config", "Code", "User", "globalStorage", "state.vscdb")
 			sources = append(sources, src{vscodeDB, pluginItemKey, parsePlugin, "VS Code plugin state"})
+		case "windows":
+			appData := os.Getenv("APPDATA")
+			if appData == "" {
+				appData = filepath.Join(home, "AppData", "Roaming")
+			}
+			vscodeDB := filepath.Join(appData,
+				"Code", "User", "globalStorage", "state.vscdb")
+			sources = append(sources, src{vscodeDB, pluginItemKey, parsePlugin, "VS Code plugin state"})
+
+			ideDB := filepath.Join(appData,
+				"JoyCode", "User", "globalStorage", "state.vscdb")
+			sources = append(sources, src{ideDB, ideItemKey, parseIDE, "JoyCoder IDE state"})
 		}
 	}
 
@@ -131,7 +143,9 @@ func loadFromStateDB(dbPath, itemKey string, parse func([]byte) (*Credentials, e
 		return nil, fmt.Errorf("state database not found at %s: %w", dbPath, err)
 	}
 
-	db, err := sql.Open("sqlite3", dbPath+"?mode=ro")
+	// modernc 不支持 mattn 的 ?mode=ro query；用 SQLite URI 以真正的只读共享锁
+	// 打开 JoyCode IDE 的库，避免 IDE 运行时拿不到锁。
+	db, err := sql.Open("sqlite", sqliteReadOnlyURI(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("cannot open state database: %w", err)
 	}
@@ -183,4 +197,14 @@ func fromFields(f loginFields) *Credentials {
 		LoginType:     f.LoginType,
 		OrgFullName:   f.OrgFullName,
 	}
+}
+
+// sqliteReadOnlyURI builds a cross-platform SQLite URI with read-only mode.
+// On Windows, absolute paths like C:\Users\... must become /C:/Users/... in URI form.
+func sqliteReadOnlyURI(path string) string {
+	p := filepath.ToSlash(path)
+	if len(p) >= 2 && p[1] == ':' {
+		p = "/" + p
+	}
+	return "file:" + p + "?mode=ro"
 }
