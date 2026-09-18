@@ -113,7 +113,7 @@ func init() {
 	serviceCmd.AddCommand(serviceUninstallCmd)
 	serviceCmd.AddCommand(serviceStatusCmd)
 	serviceInstallCmd.Flags().BoolVar(&serviceSkipValidation, "skip-validation", false, "服务启动时跳过凭据校验（与 serve 同名旗标一致）")
-	serviceCmd.PersistentFlags().IntVarP(&servePort, "port", "p", 34891, "绑定端口")
+	// --port/-p 为根级持久旗标（root.go init 注册），此处不再重复定义。
 	rootCmd.AddCommand(serviceCmd)
 }
 

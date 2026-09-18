@@ -9,8 +9,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var checkPort int
-
 var checkCmd = &cobra.Command{
 	Use:     "check",
 	Short:   "检查代理服务是否运行",
@@ -22,13 +20,13 @@ var checkCmd = &cobra.Command{
   # 检查指定端口
   jcproxy check -p 8080`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		url := fmt.Sprintf("http://localhost:%d/health", checkPort)
+		url := fmt.Sprintf("http://localhost:%d/health", servePort)
 		client := &http.Client{Timeout: 5 * time.Second}
 
 		resp, err := client.Get(url)
 		if err != nil {
 			fmt.Printf("  Status:   offline\n")
-			fmt.Printf("  Address:  localhost:%d\n", checkPort)
+			fmt.Printf("  Address:  localhost:%d\n", servePort)
 			fmt.Printf("  Error:    %s\n", err)
 			fmt.Println()
 			fmt.Println("  Start the proxy with: jcproxy serve")
@@ -51,7 +49,7 @@ var checkCmd = &cobra.Command{
 		} else {
 			fmt.Printf("  Status:   %s\n", status)
 		}
-		fmt.Printf("  Address:  localhost:%d\n", checkPort)
+		fmt.Printf("  Address:  localhost:%d\n", servePort)
 		fmt.Printf("  Service:  %s\n", service)
 		if endpoints, ok := result["endpoints"].([]interface{}); ok {
 			fmt.Printf("  Endpoints: %d registered\n", len(endpoints))
@@ -64,6 +62,6 @@ var checkCmd = &cobra.Command{
 }
 
 func init() {
-	checkCmd.Flags().IntVarP(&checkPort, "port", "p", 34891, "检查端口")
+	// --port/-p 为根级持久旗标（root.go init 注册），此处不再重复定义。
 	rootCmd.AddCommand(checkCmd)
 }

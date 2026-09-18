@@ -40,6 +40,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&userID, "userid", "u", "", "JoyCode userID（留空则自动从客户端检测）")
 	rootCmd.PersistentFlags().BoolVar(&skipValidation, "skip-validation", false, "跳过凭据验证")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "启用调试日志")
+	// --port 是根级旗标：jcproxy --port 9999 serve / jcproxy serve --port 9999 均可。
+	rootCmd.PersistentFlags().IntVarP(&servePort, "port", "p", 34891, "绑定端口（serve / daemon / service / check 共用）")
 }
 
 func resolveClient() (*joycode.Client, error) {

@@ -340,8 +340,8 @@ var serveCmd = &cobra.Command{
 
 func init() {
 	serveCmd.Flags().StringVarP(&serveHost, "host", "H", "0.0.0.0", "绑定地址")
-	serveCmd.Flags().IntVarP(&servePort, "port", "p", 34891, "绑定端口")
 	serveCmd.Flags().BoolVar(&serveTLS, "tls", true, "启用 HTTPS（自签名证书）")
+	// --port/-p 为根级持久旗标（root.go init 注册），此处不再重复定义。
 	rootCmd.AddCommand(serveCmd)
 }
 

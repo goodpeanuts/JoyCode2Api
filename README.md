@@ -97,24 +97,36 @@ Codex     ───┘    (协议翻译层)
 
 ### 方式一：一键安装（最快）
 
-macOS / Linux 一条命令装好，自动下载对应平台二进制并安装为全局命令 `jcproxy`：
+macOS / Linux 一条命令装好：自动探测平台、下载对应二进制（含 sha256 校验）、安装为 `jcproxy` 命令。安装脚本随 release 发布，与产物版本绑定：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/goodpeanuts/JoyCode2Api/erp/install.sh | bash
+curl -fsSL https://github.com/goodpeanuts/JoyCode2Api/releases/latest/download/install.sh | bash
 ```
 
 装完直接用：
 
 ```bash
 jcproxy serve        # 启动
+jcproxy update       # 升级到最新版（自动恢复 service/daemon 运行状态）
 jcproxy uninstall    # 卸载（彻底清除数据加 --purge --yes）
 ```
 
-> 默认装到 `/usr/local/bin`（需要时会用 sudo）。可用 `INSTALL_DIR=~/.local/bin` 改安装目录，`VERSION=v0.6.0` 指定版本。目前支持 macOS (Apple Silicon) 和 Linux (amd64)。
+安装选项（环境变量）：
+
+| 变量 | 说明 |
+|------|------|
+| `INSTALL_MODE=user` | 装到 `~/.joycode-proxy/bin`，**免 sudo**，自动提示配置 PATH（默认 `system` 装 `/usr/local/bin`，需要 sudo） |
+| `AUTO_START=1` | 装完自动执行 `jcproxy service install`（开机自启；交互终端会询问） |
+| `VERSION=v0.7.0` | 安装指定版本（默认 latest） |
+| `INSTALL_DIR=...` | 自定义安装目录（优先级高于 INSTALL_MODE） |
+| `SKIP_CHECKSUM=1` | 跳过 sha256 校验（不建议） |
+
+> 支持平台：macOS (Apple Silicon / Intel)、Linux (amd64 / arm64)。Windows 请到 [Releases](https://github.com/goodpeanuts/JoyCode2Api/releases) 手动下载 `joycode-proxy-windows-amd64.exe`。
+> 重跑一键安装命令 = 升级；运行中的实例会提示重启。
 
 ### 方式二：手动下载二进制
 
-去 [Releases](https://github.com/goodpeanuts/JoyCode2Api/releases) 下载对应平台的文件，命令行直接运行。前端已打包进二进制，无需解压。
+去 [Releases](https://github.com/goodpeanuts/JoyCode2Api/releases) 下载对应平台的文件（`joycode-proxy-<平台>`），命令行直接运行。前端已打包进二进制，无需解压。发布产物均附 `checksums-sha256.txt` 可校验完整性。
 
 **macOS (Apple Silicon)**
 
@@ -125,10 +137,10 @@ chmod +x joycode-proxy-darwin-arm64
 
 > macOS 从浏览器下载的二进制会被打上隔离属性，首次运行可能被 Gatekeeper 拦下（提示"无法验证开发者"或"已损坏"）。执行 `xattr -d com.apple.quarantine joycode-proxy-darwin-arm64` 解除隔离即可，或在「系统设置 → 隐私与安全性」里点「仍要打开」。
 
-**Linux (amd64)**
+**Linux (amd64 / arm64)**
 
 ```bash
-chmod +x joycode-proxy-linux-amd64
+chmod +x joycode-proxy-linux-amd64        # arm64 机器用 joycode-proxy-linux-arm64
 ./joycode-proxy-linux-amd64 serve
 ```
 
@@ -149,8 +161,11 @@ go build -o jcproxy ./cmd/JoyCodeProxy/
 ### 方式四：Docker
 
 ```bash
-./JoyCodeProxy serve --skip-validation --tls=false
+docker build --build-arg VERSION=v0.7.0 -t jcproxy .
+docker run -d -p 34891:34891 jcproxy        # 容器内默认 --skip-validation
 ```
+
+> 建议传 `--build-arg VERSION=<tag>` 让 `jcproxy version` 显示真实版本号（默认 dev）。国内网络可加 `--build-arg GOPROXY=https://goproxy.cn,direct`。完整用法（含凭据挂载、compose）见下文 [Docker / 远程部署](#docker--远程部署)。
 
 > **构建时连不上 Alpine 源？** 如果 `docker build` 卡在 `apk add` 并报 `ca-certificates`/`gcc`/`musl-dev` "no such package"，根因通常是网络连不上官方源 `dl-cdn.alpinelinux.org`（国内常见）。用 `ALPINE_MIRROR` 构建参数切到国内镜像即可：
 >
@@ -195,6 +210,16 @@ jcproxy service install    # 安装并启动（可加 -p 指定端口）
 jcproxy service status     # 查看服务状态
 jcproxy service uninstall  # 停止并移除服务
 ```
+
+> 服务配置持久化在 `~/.joycode-proxy/service.json`（端口、--skip-validation 等），`jcproxy update` 重装服务时自动恢复。默认启动时会做凭据校验，容器/无凭据环境可 `jcproxy service install --skip-validation`。
+
+### 升级
+
+```bash
+jcproxy update             # 检查新版本 → 下载 → sha256 校验 → 原子替换 → 恢复 service/daemon
+```
+
+或重跑一键安装命令（幂等覆盖，等价于升级）。开发构建（dev-*）执行 update 需加 `--force`。
 
 > `daemon` 适合临时后台跑；`service install` 适合装在自己机器上长期使用，重启电脑后会自动拉起。两者选其一即可，不要同时开。
 
@@ -403,6 +428,7 @@ docker compose up -d --build
 |------|------|------|
 | `POST` | `/v1/messages` | Anthropic Messages API（Claude Code） |
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions API（Cursor / Codex） |
+| `POST` | `/v1/responses` | OpenAI Responses API（海外 GPT 模型专用通道） |
 | `POST` | `/v1/web-search` | 网页搜索 |
 | `POST` | `/v1/rerank` | 文档重排序 |
 | `GET` | `/v1/models` | 可用模型列表 |
@@ -419,17 +445,19 @@ docker compose up -d --build
 ### 命令一览
 
 ```
-joycode-proxy serve           启动代理服务器（核心命令）
-joycode-proxy daemon          守护进程模式（崩溃自动重启）
-joycode-proxy service         管理系统服务（install/uninstall/status）
-joycode-proxy check           检查代理是否在运行
-joycode-proxy models          列出可用模型
-joycode-proxy whoami          查看当前认证用户
-joycode-proxy config          显示当前配置
-joycode-proxy chat            发送一条聊天消息
-joycode-proxy search          网页搜索
-joycode-proxy reset-password  重置 Dashboard root 密码
-joycode-proxy version         显示版本信息
+jcproxy serve           启动代理服务器（核心命令）
+jcproxy daemon          守护进程模式（崩溃自动重启）
+jcproxy service         管理系统服务（install/uninstall/status）
+jcproxy update          自升级到最新 release（校验 sha256，自动恢复服务）
+jcproxy uninstall       卸载（停止服务 + 删除二进制）
+jcproxy check           检查代理是否在运行
+jcproxy models          列出可用模型
+jcproxy whoami          查看当前认证用户
+jcproxy config          显示当前配置
+jcproxy chat            发送一条聊天消息
+jcproxy search          网页搜索
+jcproxy reset-password  重置 Dashboard root 密码
+jcproxy version         显示版本信息（--version 同效）
 ```
 
 加 `-h` 看每个命令的详细参数，例如 `joycode-proxy serve -h`。

@@ -65,5 +65,9 @@ var versionCmd = &cobra.Command{
 
 func init() {
 	Version = resolveVersion()
+	// 根级 --version 旗标：`jcproxy --version` 直接输出版本后退出
+	//（与 `jcproxy version` 子命令并存）。
+	rootCmd.Version = Version
+	rootCmd.SetVersionTemplate("jcproxy version {{.Version}}\n")
 	rootCmd.AddCommand(versionCmd)
 }

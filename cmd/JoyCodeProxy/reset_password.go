@@ -62,6 +62,6 @@ var resetPasswordCmd = &cobra.Command{
 }
 
 func init() {
-	resetPasswordCmd.Flags().StringP("new-password", "p", "", "新密码")
+	resetPasswordCmd.Flags().StringP("new-password", "w", "", "新密码")
 	rootCmd.AddCommand(resetPasswordCmd)
 }
