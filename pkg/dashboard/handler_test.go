@@ -597,6 +597,57 @@ func TestServeStaticAPIPathGETAlsoReturns404(t *testing.T) {
 	}
 }
 
+func TestServeStaticUnregisteredV1PathReturnsJSON404(t *testing.T) {
+	h, _ := setupTestHandler(t)
+
+	// /v1/* paths the proxy does not implement must fail loudly with JSON 404,
+	// not the SPA fallback (index.html + 200 looks like an empty stream to SDKs)
+	paths := []string{"/v1/responses", "/v1/embeddings", "/v1/unknown-endpoint"}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest("POST", path, nil)
+			w := httptest.NewRecorder()
+			h.ServeStatic(w, req)
+
+			if w.Code != 404 {
+				t.Errorf("status = %d, want 404 for %s", w.Code, path)
+			}
+			ct := w.Header().Get("Content-Type")
+			if !strings.Contains(ct, "application/json") {
+				t.Errorf("Content-Type = %q, want application/json for %s", ct, path)
+			}
+			var resp map[string]interface{}
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode json for %s: %v, body: %s", path, err, w.Body.String())
+			}
+			errObj, ok := resp["error"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("no error object for %s: %v", path, resp)
+			}
+			msg, _ := errObj["message"].(string)
+			if !strings.Contains(msg, "/v1/chat/completions") {
+				t.Errorf("error message should list supported endpoints for %s, got: %s", path, msg)
+			}
+		})
+	}
+}
+
+func TestServeStaticUnregisteredV1PathGETReturns404(t *testing.T) {
+	h, _ := setupTestHandler(t)
+
+	req := httptest.NewRequest("GET", "/v1/responses", nil)
+	w := httptest.NewRecorder()
+	h.ServeStatic(w, req)
+
+	if w.Code != 404 {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+	ct := w.Header().Get("Content-Type")
+	if !strings.Contains(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+}
+
 func TestServeStaticNonAPIPathStillFallsThrough(t *testing.T) {
 	h, _ := setupTestHandler(t)
 

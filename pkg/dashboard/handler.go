@@ -222,6 +222,19 @@ func (h *Handler) ServeStatic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Any other /v1/* path is an unimplemented API route. Without this the
+	// SPA fallback below would answer with index.html + HTTP 200, which API
+	// SDKs parse as an empty stream instead of a clear failure.
+	if strings.HasPrefix(path, "/v1/") {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{
+			"error": map[string]string{
+				"type":    "invalid_request_error",
+				"message": fmt.Sprintf("%s %s not found. Supported API endpoints: /v1/chat/completions, /v1/messages, /v1/models, /v1/web-search, /v1/rerank", r.Method, path),
+			},
+		})
+		return
+	}
+
 	// Handle JoyCode OAuth callback on root path: /?pt_key=xxx
 	if path == "/" && r.URL.Query().Get("pt_key") != "" {
 		h.handleOAuthCallback(w, r)

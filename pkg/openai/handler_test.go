@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -325,6 +326,128 @@ func TestChat_ValidNonStream(t *testing.T) {
 	}
 	if result["object"] != "chat.completion" {
 		t.Errorf("expected object=chat.completion, got %v", result["object"])
+	}
+}
+
+// --- Upstream error surfacing tests ---
+//
+// Upstream can answer HTTP 200 with an error payload (e.g. code 1032). These
+// tests verify the proxy reports such failures with real HTTP error statuses
+// instead of {"choices":null} or empty 200 SSE streams.
+
+// setupChatServerWithBackend wires an openai.Server against a custom upstream
+// handler and sets max_retries=1 so deterministic upstream errors don't pay
+// the retry backoff.
+func setupChatServerWithBackend(t *testing.T, upstream http.Handler) *httptest.Server {
+	t.Helper()
+	backend := httptest.NewServer(upstream)
+	client := newMockClient(backend)
+	st, storeCleanup, err := newTempStore()
+	if err != nil {
+		backend.Close()
+		t.Fatalf("newTempStore: %v", err)
+	}
+	if err := st.SetSetting("max_retries", "1"); err != nil {
+		t.Fatalf("set max_retries: %v", err)
+	}
+	srv := NewServer(client, st)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	frontend := httptest.NewServer(mux)
+	t.Cleanup(func() {
+		frontend.Close()
+		backend.Close()
+		storeCleanup()
+	})
+	return frontend
+}
+
+func TestChat_NonStreamUpstreamErrorBodyReturns500(t *testing.T) {
+	frontend := setupChatServerWithBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write([]byte(`{"error":{"code":"1032","message":"HTTP调用异常"}}`))
+	}))
+
+	body := `{"model":"JoyAI-Code","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	resp, err := http.Post(frontend.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 500 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 500, got %d: %s", resp.StatusCode, raw)
+	}
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	errObj, ok := result["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("no error object: %v", result)
+	}
+	msg, _ := errObj["message"].(string)
+	if !strings.Contains(msg, "1032") {
+		t.Errorf("error message should contain upstream code 1032, got: %s", msg)
+	}
+}
+
+func TestChat_StreamUpstreamErrorFirstLineReturns500(t *testing.T) {
+	frontend := setupChatServerWithBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprintf(w, "data: %s\n\n", `{"error":{"code":"1032","message":"HTTP调用异常"}}`)
+	}))
+
+	body := `{"model":"JoyAI-Code","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	resp, err := http.Post(frontend.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 500 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 500, got %d: %s", resp.StatusCode, raw)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json (error, not SSE)", ct)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(raw), "1032") {
+		t.Errorf("error body should contain upstream code 1032, got: %s", raw)
+	}
+}
+
+func TestChat_StreamNormalSSEPassthrough(t *testing.T) {
+	frontend := setupChatServerWithBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+
+	body := `{"model":"JoyAI-Code","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	resp, err := http.Post(frontend.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "text/event-stream") {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{"hello", "finish_reason", "[DONE]"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("stream body should contain %q, got: %s", want, raw)
+		}
 	}
 }
 
