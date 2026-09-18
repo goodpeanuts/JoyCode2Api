@@ -196,6 +196,9 @@ echo "  注册系统服务：  ${BIN_NAME} service install"
 echo "  自升级：        ${BIN_NAME} update"
 echo "  卸载：          ${BIN_NAME} uninstall"
 echo ""
+echo "  本地服务地址：  http://127.0.0.1:34891/  （默认端口；API 与 Dashboard 均由此访问）"
+echo "                  启动后浏览器打开即可进入管理界面，API Base URL 用 http://127.0.0.1:34891/v1"
+echo ""
 if ! command -v "$BIN_NAME" >/dev/null 2>&1; then
   echo "提示：${INSTALL_DIR} 似乎不在当前 PATH 中，新开终端或 source 对应 rc 文件后即可直接使用 ${BIN_NAME}。"
 fi
