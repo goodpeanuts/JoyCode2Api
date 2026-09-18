@@ -200,6 +200,7 @@ func (h *Handler) handleErrors(w http.ResponseWriter, r *http.Request) {
 var knownAPISet = map[string]bool{
 	"/chat/completions":      true,
 	"/completions":           true,
+	"/responses":             true,
 	"/messages":              true,
 	"/models":                true,
 	"/embeddings":            true,
@@ -233,7 +234,7 @@ func (h *Handler) ServeStatic(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]interface{}{
 			"error": map[string]string{
 				"type":    "invalid_request_error",
-				"message": fmt.Sprintf("%s %s not found. Supported API endpoints: /v1/chat/completions, /v1/messages, /v1/models, /v1/web-search, /v1/rerank", r.Method, path),
+				"message": fmt.Sprintf("%s %s not found. Supported API endpoints: /v1/chat/completions, /v1/responses, /v1/messages, /v1/models, /v1/web-search, /v1/rerank", r.Method, path),
 			},
 		})
 		return

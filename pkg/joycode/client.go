@@ -63,6 +63,9 @@ var colorEndpoints = map[string]colorEndpoint{
 	"/api/saas/openai/v1/web-search":       {"web_search", "/api/saas/openai/v2/web-search"},
 	"/api/saas/user/v1/userInfo":           {"joycode_userInfo", "/api/saas/user/v2/userInfo"},
 	"/api/saas/anthropic/v1/messages":      {"anthropic_completions", "/api/saas/anthropic/v1/messages"},
+	// 海外 GPT 模型（extJson.adapterType=openai-response，如 GPT-6 Astra）只能经
+	// responses_completions 通道调用；经 chat_completions 转发会被平台以 1032 拒绝。
+	"/api/saas/openai/v1/responses": {"responses_completions", "/api/saas/openai/v1/responses"},
 }
 
 // Models 列出上游 joycode_modelList 返回的 chatApiModel 名（即真正透传给上游的 model 值）。
@@ -91,6 +94,14 @@ var Models = []string{
 	"MiniMax-M2.7-agent",
 	"MiniMax-M3",
 	"MiniMax-M3-agent",
+	// 2026-09 平台新增/更名（作为 refresher 不可用时的兜底）
+	"GLM-5.3",
+	"GLM-5.2-jcloud",
+	"Kimi-K3",
+	"Kimi-K3-jcloud",
+	"GPT-6 Astra",
+	"GPT-5.6 Sol",
+	"Claude-Opus-5-hq",
 }
 
 type Client struct {

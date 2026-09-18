@@ -270,6 +270,7 @@ var serveCmd = &cobra.Command{
 			fmt.Println()
 			fmt.Println("  Endpoints:")
 			fmt.Println("    POST /v1/chat/completions  — Chat (OpenAI format)")
+			fmt.Println("    POST /v1/responses         — Chat (OpenAI Responses format, overseas GPT models)")
 			fmt.Println("    POST /v1/messages          — Chat (Anthropic/Claude Code format)")
 			fmt.Println("    POST /v1/web-search        — Web Search")
 			fmt.Println("    POST /v1/rerank            — Rerank documents")
