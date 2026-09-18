@@ -221,13 +221,18 @@ func TestModels_ServerError(t *testing.T) {
 	frontend := httptest.NewServer(mux)
 	defer frontend.Close()
 
+	// 上游不可用时回退到内置模型列表（200），而不是 500。
 	resp, err := http.Get(frontend.URL + "/v1/models")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 500 {
-		t.Fatalf("expected 500, got %d", resp.StatusCode)
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200 with built-in fallback list, got %d", resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(raw), `"object":"list"`) || !strings.Contains(string(raw), "Kimi-K3") {
+		t.Errorf("fallback model list missing expected entries, got: %s", raw)
 	}
 }
 

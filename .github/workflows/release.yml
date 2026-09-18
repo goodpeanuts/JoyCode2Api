@@ -13,8 +13,14 @@ on:
 permissions:
   contents: write
 
+# 产物命名是发布链路的单一契约：
+#   release.yml（此处 BINARY_NAME）
+#   = install.sh（ASSET_PREFIX）
+#   = cmd/JoyCodeProxy/update.go（assetName()）
+#   = README 安装说明
+# 三处必须保持 "joycode-proxy-<os>-<arch>" 小写格式，修改任一处时同步其余。
 env:
-  BINARY_NAME: JoyCodeProxy
+  BINARY_NAME: joycode-proxy
 
 jobs:
   build-frontend:
@@ -60,6 +66,9 @@ jobs:
           - goos: linux
             goarch: amd64
             suffix: linux-amd64
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
           - goos: windows
             goarch: amd64
             suffix: windows-amd64
@@ -106,15 +115,39 @@ jobs:
     needs: build-binaries
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
       - uses: actions/download-artifact@v4
         with:
           pattern: binary-*
           path: dist/
           merge-multiple: true
 
+      # 一致性断言：checksums 必须覆盖全部 5 个平台产物，
+      # 防止产物命名与 install.sh / update.go 的期望再次漂移。
+      - name: Assert expected assets
+        run: |
+          cd dist
+          for asset in \
+            ${{ env.BINARY_NAME }}-darwin-arm64 \
+            ${{ env.BINARY_NAME }}-darwin-amd64 \
+            ${{ env.BINARY_NAME }}-linux-amd64 \
+            ${{ env.BINARY_NAME }}-linux-arm64 \
+            ${{ env.BINARY_NAME }}-windows-amd64.exe; do
+            test -f "$asset" || { echo "缺失产物: $asset"; exit 1; }
+          done
+          echo "全部 5 个平台产物就绪"
+
+      # install.sh 随 release 一并发布，README 的一键安装命令指向
+      # releases/latest/download/install.sh，保证安装脚本与产物版本一致、不随分支漂移。
+      - name: Stage installer
+        run: cp install.sh dist/install.sh
+
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum ${{ env.BINARY_NAME }}-* > checksums-sha256.txt
+        run: sha256sum ${{ env.BINARY_NAME }}-* install.sh > checksums-sha256.txt
 
       - name: Resolve version
         id: version
@@ -126,9 +159,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: "${{ env.BINARY_NAME }} ${{ steps.version.outputs.tag }}"
+          name: "jcproxy ${{ steps.version.outputs.tag }}"
           body: |
-            ## ${{ env.BINARY_NAME }} ${{ steps.version.outputs.tag }}
+            ## jcproxy ${{ steps.version.outputs.tag }}
+
+            ### 一键安装（macOS / Linux）
+            ```bash
+            curl -fsSL https://github.com/goodpeanuts/JoyCode2Api/releases/latest/download/install.sh | bash
+            ```
+            用户级安装（免 sudo）：
+            ```bash
+            curl -fsSL https://github.com/goodpeanuts/JoyCode2Api/releases/latest/download/install.sh | INSTALL_MODE=user bash
+            ```
 
             ### Downloads
             | Platform | File |
@@ -136,20 +178,26 @@ jobs:
             | macOS (Apple Silicon) | `${{ env.BINARY_NAME }}-darwin-arm64` |
             | macOS (Intel) | `${{ env.BINARY_NAME }}-darwin-amd64` |
             | Linux (x86_64) | `${{ env.BINARY_NAME }}-linux-amd64` |
+            | Linux (arm64) | `${{ env.BINARY_NAME }}-linux-arm64` |
             | Windows (x86_64) | `${{ env.BINARY_NAME }}-windows-amd64.exe` |
 
             ### Quick Start
             ```bash
             # macOS / Linux
-            chmod +x JoyCodeProxy-<platform>
-            ./JoyCodeProxy-<platform> serve
+            chmod +x ${{ env.BINARY_NAME }}-<platform>
+            ./${{ env.BINARY_NAME }}-<platform> serve
 
             # Windows
-            JoyCodeProxy-windows-amd64.exe serve
+            ${{ env.BINARY_NAME }}-windows-amd64.exe serve
             ```
 
             ### Verify checksum
             ```bash
             sha256sum -c checksums-sha256.txt
+            ```
+
+            ### 升级
+            ```bash
+            jcproxy update
             ```
           files: dist/*

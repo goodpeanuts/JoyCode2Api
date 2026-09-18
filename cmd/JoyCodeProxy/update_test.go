@@ -14,9 +14,9 @@ func TestAssetName(t *testing.T) {
 		ok           bool
 	}{
 		{"darwin", "arm64", "joycode-proxy-darwin-arm64", true},
+		{"darwin", "amd64", "joycode-proxy-darwin-amd64", true},
 		{"linux", "amd64", "joycode-proxy-linux-amd64", true},
-		{"darwin", "amd64", "", false},
-		{"linux", "arm64", "", false},
+		{"linux", "arm64", "joycode-proxy-linux-arm64", true},
 		{"windows", "amd64", "", false},
 	}
 	for _, tt := range tests {

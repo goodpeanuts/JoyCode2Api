@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -49,14 +51,72 @@ func init() {
 }
 
 // assetName returns the release asset filename for the given platform, and
-// whether the platform has a published prebuilt binary.
+// whether the platform has a published prebuilt binary. The lowercase
+// "joycode-proxy-<os>-<arch>" naming is the contract shared with release.yml
+// (BINARY_NAME) and install.sh (ASSET_PREFIX) — change all three together.
 func assetName(goos, goarch string) (string, bool) {
 	switch goos + "-" + goarch {
-	case "darwin-arm64", "linux-amd64":
+	case "darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64":
 		return fmt.Sprintf("joycode-proxy-%s-%s", goos, goarch), true
 	default:
 		return "", false
 	}
+}
+
+// verifyChecksum validates the downloaded asset against the release's
+// checksums-sha256.txt. A missing checksum file or entry (older releases)
+// only warns; a present-but-mismatched digest is a hard error so a corrupt
+// or tampered download never replaces the installed binary.
+func verifyChecksum(path, repo, tag, asset string) error {
+	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/checksums-sha256.txt", repo, tag)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "jcproxy-update")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("  警告：无法下载 checksums-sha256.txt（%v），跳过校验。\n", err)
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("  警告：release 未提供 checksums-sha256.txt（HTTP %d），跳过校验。\n", resp.StatusCode)
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		fmt.Printf("  警告：读取 checksums 失败（%v），跳过校验。\n", err)
+		return nil
+	}
+	expected := ""
+	for _, line := range strings.Split(string(body), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[1] == asset {
+			expected = fields[0]
+			break
+		}
+	}
+	if expected == "" {
+		fmt.Printf("  警告：checksums 中未找到 %s，跳过校验。\n", asset)
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("计算下载文件 sha256 失败: %w", err)
+	}
+	actual := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(actual, expected) {
+		return fmt.Errorf("sha256 校验失败：期望 %s，实际 %s。下载可能不完整或被篡改，已中止（未替换旧二进制）", expected, actual)
+	}
+	fmt.Println("  sha256 校验通过。")
+	return nil
 }
 
 // githubAPIBase is the GitHub API root; overridable in tests.
@@ -353,6 +413,12 @@ func runUpdate() error {
 		return err
 	}
 	defer os.Remove(tmpPath)
+
+	// 4b. Verify the download against the published checksum before replacing
+	// anything; a mismatch aborts with the old binary untouched.
+	if err := verifyChecksum(tmpPath, updateRepo, tag, asset); err != nil {
+		return err
+	}
 
 	// 5. Locate the installed binary.
 	target, err := os.Executable()

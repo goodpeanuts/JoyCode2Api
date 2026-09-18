@@ -1,0 +1,23 @@
+# 版本控制与 CI
+.git
+.github
+
+# 前端源码与依赖（静态产物已提交在 cmd/JoyCodeProxy/static，构建时直接 embed）
+web/node_modules
+web/dist
+
+# 本机构建产物与运行数据
+jcproxy
+JoyCodeProxy
+joycode-proxy-*
+dist/
+data/
+*.log
+
+# 编辑器与系统文件
+.vscode
+.idea
+.DS_Store
+
+# 文档站源码（与镜像无关）
+docs

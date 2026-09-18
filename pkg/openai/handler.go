@@ -139,7 +139,13 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	models, err := s.getClient(r).ListModels()
 	if err != nil {
 		slog.Error("list models upstream error", "error", err)
-		writeError(w, 500, err.Error())
+		// Upstream unavailable — serve the built-in model list instead of a 500
+		// so clients still get a usable (if possibly stale) list.
+		fallback := make([]joycode.ModelInfo, 0, len(joycode.Models))
+		for _, name := range joycode.Models {
+			fallback = append(fallback, joycode.ModelInfo{Label: name, ChatAPIModel: name})
+		}
+		writeJSON(w, 200, TranslateModels(fallback))
 		return
 	}
 	writeJSON(w, 200, TranslateModels(models))
