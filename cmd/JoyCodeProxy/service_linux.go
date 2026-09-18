@@ -83,6 +83,7 @@ WantedBy=default.target
 	fmt.Printf("Service installed and started.\n")
 	fmt.Printf("  Unit:   %s\n", unitPath)
 	fmt.Printf("  Port:   %d\n", cfg.Port)
+	fmt.Printf("  URL:    http://127.0.0.1:%d/ (Dashboard) / http://127.0.0.1:%d/v1 (API)\n", cfg.Port, cfg.Port)
 	return nil
 }
 

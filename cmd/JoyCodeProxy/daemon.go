@@ -200,6 +200,7 @@ func startDaemon() error {
 	}
 	fmt.Printf("  Logs: %s\n", daemonLogFile)
 	fmt.Printf("  PID:  %s\n", daemonPIDFile)
+	fmt.Printf("  URL:  http://127.0.0.1:%d/ (Dashboard) / http://127.0.0.1:%d/v1 (API)\n", servePort, servePort)
 	return nil
 }
 

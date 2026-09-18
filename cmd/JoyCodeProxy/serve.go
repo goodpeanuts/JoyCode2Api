@@ -278,15 +278,18 @@ var serveCmd = &cobra.Command{
 			fmt.Println("    GET  /v1/models            — Model list")
 			fmt.Println("    GET  /health               — Health check")
 			fmt.Println()
-			fmt.Println("  Dashboard:")
-			if tlsCfg != nil {
-				fmt.Printf("    https://%s — Web UI (also accepts HTTP)\n", addr)
-			} else {
-				fmt.Printf("    http://%s — Web UI\n", addr)
+			// 绑定 0.0.0.0 时展示 127.0.0.1，给出可直接访问/复制的本地地址。
+			displayHost := serveHost
+			if displayHost == "" || displayHost == "0.0.0.0" || displayHost == "::" {
+				displayHost = "127.0.0.1"
 			}
+			displayURL := fmt.Sprintf("http://%s:%d", displayHost, servePort)
+			fmt.Println("  本地服务地址:")
+			fmt.Printf("    %s/     — Dashboard 管理界面（浏览器打开）\n", displayURL)
+			fmt.Printf("    %s/v1   — API Base URL（OpenAI / Anthropic 兼容端点）\n", displayURL)
 			fmt.Println()
 			fmt.Println("  Claude Code setup:")
-			fmt.Printf("    export ANTHROPIC_BASE_URL=http://%s\n", addr)
+			fmt.Printf("    export ANTHROPIC_BASE_URL=%s\n", displayURL)
 			fmt.Println("    export ANTHROPIC_API_KEY=joycode")
 			if verbose {
 				fmt.Println()

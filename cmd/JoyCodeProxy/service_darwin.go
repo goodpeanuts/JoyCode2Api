@@ -100,6 +100,7 @@ func installService(cfg serviceConfig) error {
 	fmt.Printf("  Label:   %s\n", serviceLabel)
 	fmt.Printf("  Plist:   %s\n", plistPath)
 	fmt.Printf("  Port:    %d\n", cfg.Port)
+	fmt.Printf("  URL:     http://127.0.0.1:%d/ (Dashboard) / http://127.0.0.1:%d/v1 (API)\n", cfg.Port, cfg.Port)
 	fmt.Printf("  Logs:    %s/\n", logPath)
 	return nil
 }

@@ -74,6 +74,7 @@ func installService(cfg serviceConfig) error {
 	fmt.Printf("  Name:   %s\n", serviceName)
 	fmt.Printf("  Binary: %s\n", binPath)
 	fmt.Printf("  Port:   %d\n", cfg.Port)
+	fmt.Printf("  URL:    http://127.0.0.1:%d/ (Dashboard) / http://127.0.0.1:%d/v1 (API)\n", cfg.Port, cfg.Port)
 	fmt.Printf("\nManage with:\n")
 	fmt.Printf("  nssm status %s\n", serviceName)
 	fmt.Printf("  nssm stop %s\n", serviceName)
